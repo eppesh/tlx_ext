@@ -186,12 +186,12 @@ public:
     //! Computed B+ tree parameter: The minimum number of key/data slots used
     //! in a leaf. If fewer slots are used, the leaf will be merged or slots
     //! shifted from it's siblings.
-    static const unsigned short leaf_slotmin = (leaf_slotmax / 2);
+    static const unsigned short leaf_slotmin = (leaf_slotmax / 2) - 1;
 
     //! Computed B+ tree parameter: The minimum number of key slots used
     //! in an inner node. If fewer slots are used, the inner node will be
     //! merged or slots shifted from it's siblings.
-    static const unsigned short inner_slotmin = (inner_slotmax / 2);
+    static const unsigned short inner_slotmin = (inner_slotmax / 2) - 1;
 
     //! Debug parameter: Enables expensive and thorough checking of the B+ tree
     //! invariants after each insert/erase operation.
