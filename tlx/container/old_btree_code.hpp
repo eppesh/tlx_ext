@@ -1877,63 +1877,31 @@ private:
     std::pair<iterator, bool>
     insert_start(const key_type& key, const value_type& value) {
 
+        node* newchild = nullptr;
+        key_type newkey = key_type();
+
         if (root_ == nullptr) {
             root_ = head_leaf_ = tail_leaf_ = allocate_leaf();
         }
 
-        if (root_->is_leafnode()) {
-            // case where the root is the only node and needs to be checked
-            LeafNode* root = static_cast<LeafNode*>(root_);
-            if (root->is_full()) {
-                key_type* rightkey = nullptr;
-                node** rightleaf = nullptr;
-                // TODO make sure split works
-                split_leaf_node(root, rightkey, rightleaf);
-
-                /* deleted: need root to still be the root
-                InnerNode* leftchild = allocate_inner(root_->level + 1);
-                
-                std::copy(root->slotdata, root->slotdata + root->slotuse, 
-                          leftchild->slotdata);
-
-                root->slotkey[0] = rightkey;
-                root->childid[0] = leftchild;
-                root->childid[1] = rightleaf;
-                root->slotuse = 1;*/
-
-                InnerNode* newroot = allocate_inner(root_->level + 1);
-                newroot->slotkey[0] = rightkey;
-
-                newroot->childid[0] = root_;
-                newroot->childid[1] = rightleaf;
-
-                newroot->slotuse = 1;
-
-                root_ = newroot;
-            }
-        } else {
-            InnerNode* root = static_cast<InnerNode*>(root_);
-            if (root->is_full()) {
-                key_type* rightkey = nullptr;
-                node** rightleaf = nullptr;
-                
-                // TODO make sure split works
-                split_inner_node(root, rightkey, rightleaf);
-                
-                InnerNode* newroot = allocate_inner(root_->level + 1);
-                newroot->slotkey[0] = rightkey;
-
-                newroot->childid[0] = root_;
-                newroot->childid[1] = rightleaf;
-
-                newroot->slotuse = 1;
-
-                root_ = newroot;
-            }
-        }
-
         std::pair<iterator, bool> r =
-            insert_descend(root_, key, value);
+            insert_descend(root_, key, value, &newkey, &newchild);
+
+        if (newchild)
+        {
+            // this only occurs if insert_descend() could not insert the key
+            // into the root node, this mean the root is full and a new root
+            // needs to be created.
+            InnerNode* newroot = allocate_inner(root_->level + 1);
+            newroot->slotkey[0] = newkey;
+
+            newroot->childid[0] = root_;
+            newroot->childid[1] = newchild;
+
+            newroot->slotuse = 1;
+
+            root_ = newroot;
+        }
 
         // increment size if the item was inserted
         if (r.second) ++stats_.size;
@@ -1950,21 +1918,6 @@ private:
         return r;
     }
 
-    /*//! Check if the root's child needs to be split, 
-    //! in which case it splits it.
-    void check_split_root_child(const node* child) {
-        if (child->is_leafnode()) {
-            LeafNode* node = static_cast<LeafNode*>(child);
-            if (node->is_full()) {
-                key_type* newkey = nullptr;
-                node** newleaf = nullptr;
-
-                split_leaf_node(node, newkey, newleaf);
-                
-            }
-        }
-    }*/
-
     /*!
      * Insert an item into the B+ tree.
      *
@@ -1973,7 +1926,8 @@ private:
      * inserted into the parent. Unroll / this splitting up to the root.
     */
     std::pair<iterator, bool> insert_descend(
-        node* n, const key_type& key, const value_type& value) {
+        node* n, const key_type& key, const value_type& value,
+        key_type* splitkey, node** splitnode) {
 
         if (!n->is_leafnode())
         {
@@ -2150,14 +2104,25 @@ private:
     }
 
     //! Split up an inner node into two equally-filled sibling nodes. Returns
-    //! the new nodes and its insertion key in the two parameters. 
+    //! the new nodes and its insertion key in the two parameters. Requires the
+    //! slot of the item will be inserted, so the nodes will be the same size
+    //! after the insert.
     void split_inner_node(InnerNode* inner, key_type* out_newkey,
-                          node** out_newinner) {
+                          node** out_newinner, unsigned int addslot) {
         TLX_BTREE_ASSERT(inner->is_full());
 
         unsigned short mid = (inner->slotuse >> 1);
 
-        TLX_BTREE_PRINT("BTree::split_inner: mid " << mid);
+        TLX_BTREE_PRINT("BTree::split_inner: mid " << mid <<
+                        " addslot " << addslot);
+
+        // if the split is uneven and the overflowing item will be put into the
+        // larger node, then the smaller split node may underflow
+        if (addslot <= mid && mid > inner->slotuse - (mid + 1))
+            mid--;
+
+        TLX_BTREE_PRINT("BTree::split_inner: mid " << mid <<
+                        " addslot " << addslot);
 
         TLX_BTREE_PRINT("BTree::split_inner_node on " << inner <<
                         " into two nodes " << mid << " and " <<
