@@ -2351,6 +2351,38 @@ public:
 
         if (!root_) return false;
 
+        if (!root_->is_leafnode())
+        {
+            if (root_->slotuse <= 1)
+            {
+                InnerNode* root = static_cast<InnerNode*>(root_);
+                TLX_BTREE_ASSERT(root->slotuse == 1);
+                if (root->level == 1)
+                {
+                    // then these must be leaves
+                    LeafNode* leftchild = static_cast<LeafNode*>(root->childid[0]);
+                    LeafNode* rightchild = static_cast<LeafNode*>(root->childid[1]);
+
+                    if (leftchild->slotuse + rightchild->slotuse < inner_slotmax)
+                    {
+                        // case: they can merge
+                        merge_leaves(leftchild, rightchild, root);
+                        root_ = leftchild;
+                    }
+                } else {
+                    InnerNode* leftchild = static_cast<InnerNode*>(root->childid[0]);
+                    InnerNode* rightchild = static_cast<InnerNode*>(root->childid[1]);
+
+                    if (leftchild->slotuse + rightchild->slotuse < inner_slotmax)
+                    {
+                        // case: they can merge
+                        merge_inner(leftchild, rightchild, root, 0);
+                        root_ = leftchild;
+                    }
+                }
+            }
+        }
+
         result_t result = erase_one_descend(
             key, root_, nullptr, nullptr, nullptr, nullptr, nullptr, 0);
 
@@ -3115,7 +3147,7 @@ private:
     //! to left and sets right's slotuse to zero. The right slot is then removed
     //! by the calling parent node.
     result_t merge_leaves(LeafNode* left, LeafNode* right,
-                          InnerNode* parent) {
+                          const InnerNode* parent) {
         TLX_BTREE_PRINT("Merge leaf nodes " << left << " and " << right <<
                         " with common parent " << parent << ".");
         (void)parent;
@@ -3145,7 +3177,7 @@ private:
     //! right to left and sets right's slotuse to zero. The right slot is then
     //! removed by the calling parent node.
     static result_t merge_inner(InnerNode* left, InnerNode* right,
-                                InnerNode* parent, unsigned int parentslot) {
+                                const InnerNode* parent, unsigned int parentslot) {
         TLX_BTREE_PRINT("Merge inner nodes " << left << " and " << right <<
                         " with common parent " << parent << ".");
 
@@ -3593,7 +3625,7 @@ private:
                 if (slot == inner->slotuse)
                     *maxkey = submaxkey;
                 else
-                    tlx_die_unless(key_equal(inner->key(slot), submaxkey));
+                    tlx_die_unless(key_lessequal(inner->key(slot), submaxkey));
 
                 if (inner->level == 1 && slot < inner->slotuse)
                 {
