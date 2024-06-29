@@ -23,6 +23,7 @@
 #include <memory>
 #include <ostream>
 #include <utility>
+#include <iostream>
 
 namespace tlx {
 
@@ -34,9 +35,9 @@ namespace tlx {
 
 // *** Debugging Macros
 
-#ifdef TLX_BTREE_DEBUG
+#define TLX_BTREE_DEBUG
 
-#include <iostream>
+#ifdef TLX_BTREE_DEBUG
 
 //! Print out debug information to std::cout if TLX_BTREE_DEBUG is defined.
 #define TLX_BTREE_PRINT(x) \
@@ -186,12 +187,12 @@ public:
     //! Computed B+ tree parameter: The minimum number of key/data slots used
     //! in a leaf. If fewer slots are used, the leaf will be merged or slots
     //! shifted from it's siblings.
-    static const unsigned short leaf_slotmin = (leaf_slotmax / 2) - 1;
+    static const unsigned short leaf_slotmin = (leaf_slotmax / 2);
 
     //! Computed B+ tree parameter: The minimum number of key slots used
     //! in an inner node. If fewer slots are used, the inner node will be
     //! merged or slots shifted from it's siblings.
-    static const unsigned short inner_slotmin = (inner_slotmax / 2) - 1;
+    static const unsigned short inner_slotmin = (inner_slotmax / 2);
 
     //! Debug parameter: Enables expensive and thorough checking of the B+ tree
     //! invariants after each insert/erase operation.
@@ -1876,7 +1877,7 @@ private:
     //! Returns true if the item was inserted
     std::pair<iterator, bool>
     insert_start(const key_type& key, const value_type& value) {
-
+        //TLX_BTREE_PRINT("insert start");
         if (root_ == nullptr)
         {
             root_ = head_leaf_ = tail_leaf_ = allocate_leaf();
@@ -1888,7 +1889,7 @@ private:
             LeafNode* root = static_cast<LeafNode*>(root_);
             if (root->is_full())
             {
-                TLX_BTREE_PRINT("BTree::insert_start: make new root, root is LeafNode");
+                //TLX_BTREE_PRINT("BTree::insert_start: make new root, root is LeafNode");
                 key_type rightkey = key_type();
                 node* rightleaf = nullptr;
                 // TODO make sure split works
@@ -1920,7 +1921,7 @@ private:
         {
             InnerNode* root = static_cast<InnerNode*>(root_);
             if (root->is_full()) {
-                TLX_BTREE_PRINT("BTree::insert_start: make new root, root is InnerNode");
+                //TLX_BTREE_PRINT("BTree::insert_start: make new root, root is InnerNode");
                 key_type rightkey = key_type();
                 node* rightleaf = nullptr;
 
@@ -1957,52 +1958,6 @@ private:
         return r;
     }
 
-    //! Check if the node's child need to be split,
-    //! in which case it splits it.
-    void check_split_child(InnerNode* parent, node* c, unsigned short slot) {
-        if (c->is_leafnode())
-        {
-            LeafNode* child = static_cast<LeafNode*>(c);
-            if (child->is_full())
-            {
-                key_type newkey = key_type();
-                node* newleaf = nullptr;
-
-                split_leaf_node(child, &newkey, &newleaf);
-                std::copy_backward(
-                    parent->slotkey + slot, parent->slotkey + parent->slotuse,
-                    parent->slotkey + parent->slotuse + 1);
-                std::copy_backward(
-                    parent->childid + slot, parent->childid + parent->slotuse + 1,
-                    parent->childid + parent->slotuse + 2);
-
-                parent->slotkey[slot] = newkey;
-                parent->childid[slot + 1] = newleaf;
-                parent->slotuse++;
-            }
-        }
-        else
-        {
-            InnerNode* child = static_cast<InnerNode*>(c);
-            if (child->is_full()) {
-                key_type newkey = key_type();
-                node* newnode = nullptr;
-
-                split_inner_node(child, &newkey, &newnode);
-                std::copy_backward(
-                    parent->slotkey + slot, parent->slotkey + parent->slotuse,
-                    parent->slotkey + parent->slotuse + 1);
-                std::copy_backward(
-                    parent->childid + slot, parent->childid + parent->slotuse + 1,
-                    parent->childid + parent->slotuse + 2);
-
-                parent->slotkey[slot] = newkey;
-                parent->childid[slot + 1] = newnode;
-                parent->slotuse++;
-            }
-        }
-    }
-
     /*!
      * Insert an item into the B+ tree.
      *
@@ -2018,12 +1973,13 @@ private:
             InnerNode* inner = static_cast<InnerNode*>(n);
             unsigned short slot = find_lower(inner, key);
 
-            check_split_child(inner, inner->childid[slot], slot);
+            bool split = check_split_child(inner, inner->childid[slot], slot);
+            
+            // if the key ended up moving
+            if (split && key_less(inner->key(slot), key)) slot++;
 
-            slot = find_lower(inner, key);
-
-            TLX_BTREE_PRINT(
-                "BTree::insert_descend into " << inner->childid[slot]);
+            //TLX_BTREE_PRINT(
+                //"BTree::insert_descend into " << inner->childid[slot]);
 
             std::pair<iterator, bool> r =
                 insert_descend(inner->childid[slot],
@@ -2053,9 +2009,59 @@ private:
 
             leaf->slotdata[slot] = value;
             leaf->slotuse++;
-
             return std::pair<iterator, bool>(iterator(leaf, slot), true);
         }
+    }
+
+    //! Check if the node's child need to be split,
+    //! in which case it splits it. Returns whether or now the child was split
+    bool check_split_child(InnerNode* parent, node* c, unsigned short slot) {
+        TLX_BTREE_ASSERT(parent->childid[slot] == c);
+
+        if (c->is_leafnode())
+        {
+            LeafNode* child = static_cast<LeafNode*>(c);
+            if (child->is_full())
+            {
+                key_type newkey = key_type();
+                node* newleaf = nullptr;
+
+                split_leaf_node(child, &newkey, &newleaf);
+                std::copy_backward(
+                    parent->slotkey + slot, parent->slotkey + parent->slotuse,
+                    parent->slotkey + parent->slotuse + 1);
+                std::copy_backward(
+                    parent->childid + slot, parent->childid + parent->slotuse + 1,
+                    parent->childid + parent->slotuse + 2);
+
+                parent->slotkey[slot] = newkey;
+                parent->childid[slot + 1] = newleaf;
+                parent->slotuse++;
+                return true;
+            }
+        }
+        else
+        {
+            InnerNode* child = static_cast<InnerNode*>(c);
+            if (child->is_full()) {
+                key_type newkey = key_type();
+                node* newnode = nullptr;
+
+                split_inner_node(child, &newkey, &newnode);
+                std::copy_backward(
+                    parent->slotkey + slot, parent->slotkey + parent->slotuse,
+                    parent->slotkey + parent->slotuse + 1);
+                std::copy_backward(
+                    parent->childid + slot, parent->childid + parent->slotuse + 1,
+                    parent->childid + parent->slotuse + 2);
+
+                parent->slotkey[slot] = newkey;
+                parent->childid[slot + 1] = newnode;
+                parent->slotuse++;
+                return true;
+            }
+        }
+        return false;
     }
 
     //! Split up a leaf node into two equally-filled sibling leaves. Returns the
@@ -2066,7 +2072,7 @@ private:
 
         unsigned short mid = (leaf->slotuse >> 1);
 
-        TLX_BTREE_PRINT("BTree::split_leaf_node on " << leaf);
+        //TLX_BTREE_PRINT("BTree::split_leaf_node on " << leaf);
 
         LeafNode* newleaf = allocate_leaf();
 
@@ -2100,11 +2106,11 @@ private:
 
         unsigned short mid = (inner->slotuse >> 1);
 
-        TLX_BTREE_PRINT("BTree::split_inner: mid " << mid);
+        //TLX_BTREE_PRINT("BTree::split_inner: mid " << mid);
 
-        TLX_BTREE_PRINT("BTree::split_inner_node on " << inner <<
-                        " into two nodes " << mid << " and " <<
-                        inner->slotuse - (mid + 1) << " sized");
+        //TLX_BTREE_PRINT("BTree::split_inner_node on " << inner <<
+                        //" into two nodes " << mid << " and " <<
+                        //inner->slotuse - (mid + 1) << " sized");
 
         InnerNode* newinner = allocate_inner(inner->level);
 
@@ -2139,11 +2145,11 @@ public:
         size_t num_items = iend - ibegin;
         size_t num_leaves = (num_items + leaf_slotmax - 1) / leaf_slotmax;
 
-        TLX_BTREE_PRINT("BTree::bulk_load, level 0: " << stats_.size <<
+        /*TLX_BTREE_PRINT("BTree::bulk_load, level 0: " << stats_.size <<
                         " items into " << num_leaves <<
                         " leaves with up to " <<
                         ((iend - ibegin + num_leaves - 1) / num_leaves) <<
-                        " items per leaf.");
+                        " items per leaf.");*/
 
         Iterator it = ibegin;
         for (size_t i = 0; i < num_leaves; ++i)
@@ -2183,11 +2189,11 @@ public:
         size_t num_parents =
             (num_leaves + (inner_slotmax + 1) - 1) / (inner_slotmax + 1);
 
-        TLX_BTREE_PRINT("BTree::bulk_load, level 1: " <<
+        /*TLX_BTREE_PRINT("BTree::bulk_load, level 1: " <<
                         num_leaves << " leaves in " <<
                         num_parents << " inner nodes with up to " <<
                         ((num_leaves + num_parents - 1) / num_parents) <<
-                        " leaves per inner node.");
+                        " leaves per inner node.");*/
 
         // save inner nodes and maxkey for next level.
         typedef std::pair<InnerNode*, const key_type*> nextlevel_type;
@@ -2230,12 +2236,12 @@ public:
             num_parents =
                 (num_children + (inner_slotmax + 1) - 1) / (inner_slotmax + 1);
 
-            TLX_BTREE_PRINT(
+            /*TLX_BTREE_PRINT(
                 "BTree::bulk_load, level " << level <<
                     ": " << num_children << " children in " <<
                     num_parents << " inner nodes with up to " <<
                     ((num_children + num_parents - 1) / num_parents) <<
-                    " children per inner node.");
+                    " children per inner node.");*/
 
             size_t inner_index = 0;
             for (size_t i = 0; i < num_parents; ++i)
@@ -2367,6 +2373,8 @@ public:
                     {
                         // case: they can merge
                         merge_leaves(leftchild, rightchild, root);
+                        free_node(rightchild);
+                        free_node(root);
                         root_ = leftchild;
                     }
                 } else {
@@ -2377,6 +2385,8 @@ public:
                     {
                         // case: they can merge
                         merge_inner(leftchild, rightchild, root, 0);
+                        free_node(rightchild);
+                        free_node(root);
                         root_ = leftchild;
                     }
                 }
@@ -2384,10 +2394,15 @@ public:
         }
 
         result_t result = erase_one_descend(
-            key, root_, nullptr, nullptr, nullptr, nullptr, nullptr, 0);
+            key, root_);
 
         if (!result.has(btree_not_found))
             --stats_.size;
+
+        if (stats_.size == 0) {
+            free_node(root_);
+            root_ = nullptr;
+        }
 
 #ifdef TLX_BTREE_DEBUG
         if (debug) print(std::cout);
@@ -2456,16 +2471,17 @@ private:
      * the underflow by shifting key/data pairs from adjacent sibling nodes,
      * merging two sibling nodes or trimming the tree.
      */
-    result_t erase_one_descend(const key_type& key,
-                               node* curr,
-                               node* left, node* right,
-                               InnerNode* left_parent, InnerNode* right_parent,
-                               InnerNode* parent, unsigned int parentslot) {
+    result_t erase_one_descend(const key_type& key, node* curr) {
+        TLX_BTREE_PRINT("erase one descend(" << key << "," << curr << 
+                ") on btree size " << size());
+        
+        if (self_verify) verify();
+
         if (curr->is_leafnode())
         {
             LeafNode* leaf = static_cast<LeafNode*>(curr);
-            LeafNode* left_leaf = static_cast<LeafNode*>(left);
-            LeafNode* right_leaf = static_cast<LeafNode*>(right);
+
+            TLX_BTREE_PRINT("erase one descend LeafNode" << leaf);
 
             unsigned short slot = find_lower(leaf, key);
 
@@ -2484,291 +2500,217 @@ private:
 
             leaf->slotuse--;
 
-            result_t myres = btree_ok;
-
-            // if the last key of the leaf was changed, the parent is notified
-            // and updates the key of this leaf
-            if (slot == leaf->slotuse)
-            {
-                if (parent && parentslot < parent->slotuse)
-                {
-                    TLX_BTREE_ASSERT(parent->childid[parentslot] == curr);
-                    parent->slotkey[parentslot] = leaf->key(leaf->slotuse - 1);
-                }
-                else
-                {
-                    if (leaf->slotuse >= 1)
-                    {
-                        TLX_BTREE_PRINT("Scheduling lastkeyupdate: key " <<
-                                        leaf->key(leaf->slotuse - 1));
-                        myres |= result_t(
-                            btree_update_lastkey, leaf->key(leaf->slotuse - 1));
-                    }
-                    else
-                    {
-                        TLX_BTREE_ASSERT(leaf == root_);
-                    }
-                }
-            }
-
-            if (leaf->is_underflow() && !(leaf == root_ && leaf->slotuse >= 1))
-            {
-                // determine what to do about the underflow
-
-                // case : if this empty leaf is the root, then delete all nodes
-                // and set root to nullptr.
-                if (left_leaf == nullptr && right_leaf == nullptr)
-                {
-                    TLX_BTREE_ASSERT(leaf == root_);
-                    TLX_BTREE_ASSERT(leaf->slotuse == 0);
-
-                    free_node(root_);
-
-                    root_ = leaf = nullptr;
-                    head_leaf_ = tail_leaf_ = nullptr;
-
-                    // will be decremented soon by insert_start()
-                    TLX_BTREE_ASSERT(stats_.size == 1);
-                    TLX_BTREE_ASSERT(stats_.leaves == 0);
-                    TLX_BTREE_ASSERT(stats_.inner_nodes == 0);
-
-                    return btree_ok;
-                }
-                // case : if both left and right leaves would underflow in case
-                // of a shift, then merging is necessary. choose the more local
-                // merger with our parent
-                else if ((left_leaf == nullptr || left_leaf->is_few()) &&
-                         (right_leaf == nullptr || right_leaf->is_few()))
-                {
-                    if (left_parent == parent)
-                        myres |= merge_leaves(left_leaf, leaf, left_parent);
-                    else
-                        myres |= merge_leaves(leaf, right_leaf, right_parent);
-                }
-                // case : the right leaf has extra data, so balance right with
-                // current
-                else if ((left_leaf != nullptr && left_leaf->is_few()) &&
-                         (right_leaf != nullptr && !right_leaf->is_few()))
-                {
-                    if (right_parent == parent)
-                        myres |= shift_left_leaf(
-                            leaf, right_leaf, right_parent, parentslot);
-                    else
-                        myres |= merge_leaves(left_leaf, leaf, left_parent);
-                }
-                // case : the left leaf has extra data, so balance left with
-                // current
-                else if ((left_leaf != nullptr && !left_leaf->is_few()) &&
-                         (right_leaf != nullptr && right_leaf->is_few()))
-                {
-                    if (left_parent == parent)
-                        shift_right_leaf(
-                            left_leaf, leaf, left_parent, parentslot - 1);
-                    else
-                        myres |= merge_leaves(leaf, right_leaf, right_parent);
-                }
-                // case : both the leaf and right leaves have extra data and our
-                // parent, choose the leaf with more data
-                else if (left_parent == right_parent)
-                {
-                    if (left_leaf->slotuse <= right_leaf->slotuse)
-                        myres |= shift_left_leaf(
-                            leaf, right_leaf, right_parent, parentslot);
-                    else
-                        shift_right_leaf(
-                            left_leaf, leaf, left_parent, parentslot - 1);
-                }
-                else
-                {
-                    if (left_parent == parent)
-                        shift_right_leaf(
-                            left_leaf, leaf, left_parent, parentslot - 1);
-                    else
-                        myres |= shift_left_leaf(
-                            leaf, right_leaf, right_parent, parentslot);
-                }
-            }
-
-            return myres;
+            return btree_ok;
         }
         else // !curr->is_leafnode()
         {
-            InnerNode* inner = static_cast<InnerNode*>(curr);
-            InnerNode* left_inner = static_cast<InnerNode*>(left);
-            InnerNode* right_inner = static_cast<InnerNode*>(right);
+            InnerNode* parent = static_cast<InnerNode*>(curr);
+            TLX_BTREE_PRINT("erase one descend InnerNode" << parent);
+            unsigned short slot = find_lower(parent, key);
 
-            node* myleft, * myright;
-            InnerNode* myleft_parent, * myright_parent;
+            // this slot makes sure theres always a left and right child, so
+            // that they can be rebalanced
+            unsigned short fake_slot = (slot == parent->slotuse) ? slot - 1 : slot;
 
-            unsigned short slot = find_lower(inner, key);
+            TLX_BTREE_PRINT("erase one descend: slot " << slot << " fake_slot " 
+                    << fake_slot);
 
-            if (slot == 0) {
-                myleft =
-                    (left == nullptr) ? nullptr :
-                    static_cast<InnerNode*>(left)->childid[left->slotuse - 1];
-                myleft_parent = left_parent;
-            }
-            else {
-                myleft = inner->childid[slot - 1];
-                myleft_parent = inner;
-            }
-
-            if (slot == inner->slotuse) {
-                myright =
-                    (right == nullptr) ? nullptr :
-                    static_cast<InnerNode*>(right)->childid[0];
-                myright_parent = right_parent;
-            }
-            else {
-                myright = inner->childid[slot + 1];
-                myright_parent = inner;
-            }
-
-            TLX_BTREE_PRINT("erase_one_descend into " << inner->childid[slot]);
-
-            result_t result = erase_one_descend(
-                key,
-                inner->childid[slot],
-                myleft, myright,
-                myleft_parent, myright_parent,
-                inner, slot);
-
-            result_t myres = btree_ok;
-
-            if (result.has(btree_not_found))
+            if (parent->level == 1)
             {
-                return result;
-            }
+                TLX_BTREE_PRINT("erase one descend: leafnode children");
+                // children are leaf nodes
+                LeafNode* leftchild = static_cast<LeafNode*>
+                        (parent->childid[fake_slot]);
 
-            if (result.has(btree_update_lastkey))
+                LeafNode* rightchild = static_cast<LeafNode*>
+                        (parent->childid[fake_slot + 1]);
+                
+                TLX_BTREE_ASSERT(leftchild != nullptr && rightchild != nullptr);
+
+                /*LeafNode* rightchild = nullptr;
+                if (parentslot < inner->slotuse) {
+                    rightchild = static_cast<LeafNode*>
+                        (parent->childid[parentslot + 1]);
+                }*/
+
+               // it's totally fine for both to be few
+                if (leftchild->is_underflow() || rightchild->is_underflow()) {
+                    TLX_BTREE_PRINT("erase one descend: leaf redistribute");
+                    redistribute_leaf_children(parent, leftchild, rightchild, fake_slot);
+                    if (rightchild->slotuse != 0) {
+                        // assuming merge didn't happen
+                        if (key_greaterequal(key, rightchild->key(0)) &&
+                                slot == fake_slot) {
+                            slot++;
+                        } else if (key_greater(rightchild->key(0), key) &&
+                                slot != fake_slot) {
+                                    slot--;
+                        }
+                    } else if (slot != fake_slot) { // && rightchild->slotuse == 0
+                        slot--;
+                    }
+                    if (find_lower(parent, key) != slot) {
+                        return btree_not_found;
+                        // TODO delete
+                    }
+                    TLX_BTREE_ASSERT(find_lower(parent, key) == slot);
+                }
+            }
+            else
             {
-                if (parent && parentslot < parent->slotuse)
-                {
-                    TLX_BTREE_PRINT("Fixing lastkeyupdate: key " <<
-                                    result.lastkey << " into parent " <<
-                                    parent << " at parentslot " <<
-                                    parentslot);
+                TLX_BTREE_PRINT("erase one descend: innernode children");
+                // children are inner nodes
+                InnerNode* leftchild = static_cast<InnerNode*>
+                        (parent->childid[fake_slot]);
 
-                    TLX_BTREE_ASSERT(parent->childid[parentslot] == curr);
-                    parent->slotkey[parentslot] = result.lastkey;
-                }
-                else
-                {
-                    TLX_BTREE_PRINT(
-                        "Forwarding lastkeyupdate: key " << result.lastkey);
-                    myres |= result_t(btree_update_lastkey, result.lastkey);
-                }
-            }
+                InnerNode* rightchild = static_cast<InnerNode*>
+                        (parent->childid[fake_slot + 1]);
+                
+                TLX_BTREE_ASSERT(leftchild != nullptr && rightchild != nullptr);
 
-            if (result.has(btree_fixmerge))
-            {
-                // either the current node or the next is empty and should be
-                // removed
-                if (inner->childid[slot]->slotuse != 0)
-                    slot++;
-
-                // this is the child slot invalidated by the merge
-                TLX_BTREE_ASSERT(inner->childid[slot]->slotuse == 0);
-
-                free_node(inner->childid[slot]);
-
-                std::copy(
-                    inner->slotkey + slot, inner->slotkey + inner->slotuse,
-                    inner->slotkey + slot - 1);
-                std::copy(
-                    inner->childid + slot + 1,
-                    inner->childid + inner->slotuse + 1,
-                    inner->childid + slot);
-
-                inner->slotuse--;
-
-                if (inner->level == 1)
-                {
-                    // fix split key for children leaves
-                    slot--;
-                    LeafNode* child =
-                        static_cast<LeafNode*>(inner->childid[slot]);
-                    inner->slotkey[slot] = child->key(child->slotuse - 1);
+                // it's totally fine for both to be few
+                if (leftchild->is_underflow() || rightchild->is_underflow()) {
+                    TLX_BTREE_PRINT("erase one descend: inner redistribute");
+                    redistribute_inner_children(parent, leftchild, rightchild, fake_slot);
+                    if (rightchild->slotuse != 0) {
+                        // assuming merge didn't happen
+                        if (key_greaterequal(key, rightchild->key(0)) &&
+                                slot == fake_slot) {
+                            slot++;
+                        } else if (key_greater(rightchild->key(0), key) &&
+                                slot != fake_slot) {
+                                    slot--;
+                        }
+                    } else if (slot != fake_slot) { // && rightchild->slotuse == 0
+                        slot--;
+                    }
+                    TLX_BTREE_ASSERT(find_lower(parent, key) == slot);
                 }
             }
 
-            if (inner->is_underflow() &&
-                !(inner == root_ && inner->slotuse >= 1))
-            {
-                // case: the inner node is the root and has just one child. that
-                // child becomes the new root
-                if (left_inner == nullptr && right_inner == nullptr)
-                {
-                    TLX_BTREE_ASSERT(inner == root_);
-                    TLX_BTREE_ASSERT(inner->slotuse == 0);
+            return erase_one_descend(key, parent->childid[slot]);
+        }
+    }
 
-                    root_ = inner->childid[0];
+    // Redistributes/merges the data of two adjacent leaf children of the parent.
+    // It is assumed that the children need rebalancing/merging.
+    void redistribute_leaf_children(InnerNode* parent, LeafNode* leftchild,
+                                    LeafNode* rightchild, unsigned int parentslot) {
+        
+        // TODO: this is a random place to put this todo, but uncomment the prints
+        TLX_BTREE_PRINT("redistribute_leaf_children(" << parent << "," << leftchild
+                 << "," << rightchild << "," << parentslot << ")");
+        TLX_BTREE_ASSERT(leftchild->is_underflow() || rightchild->is_underflow());
+        TLX_BTREE_ASSERT(parentslot < parent->slotuse);
+        TLX_BTREE_ASSERT(parent->childid[parentslot] == leftchild);
+        TLX_BTREE_ASSERT(parent->childid[parentslot + 1] == rightchild);
 
-                    inner->slotuse = 0;
-                    free_node(inner);
+        // case: merging is necessary
+        if ( (leftchild->is_few() && rightchild->is_underflow())
+            || (leftchild->is_underflow() && rightchild->is_few()))
+        {
+            merge_leaves(leftchild, rightchild, parent);
 
-                    return btree_ok;
-                }
-                // case : if both left and right leaves would underflow in case
-                // of a shift, then merging is necessary. choose the more local
-                // merger with our parent
-                else if ((left_inner == nullptr || left_inner->is_few()) &&
-                         (right_inner == nullptr || right_inner->is_few()))
-                {
-                    if (left_parent == parent)
-                        myres |= merge_inner(
-                            left_inner, inner, left_parent, parentslot - 1);
-                    else
-                        myres |= merge_inner(
-                            inner, right_inner, right_parent, parentslot);
-                }
-                // case : the right leaf has extra data, so balance right with
-                // current
-                else if ((left_inner != nullptr && left_inner->is_few()) &&
-                         (right_inner != nullptr && !right_inner->is_few()))
-                {
-                    if (right_parent == parent)
-                        shift_left_inner(
-                            inner, right_inner, right_parent, parentslot);
-                    else
-                        myres |= merge_inner(
-                            left_inner, inner, left_parent, parentslot - 1);
-                }
-                // case : the left leaf has extra data, so balance left with
-                // current
-                else if ((left_inner != nullptr && !left_inner->is_few()) &&
-                         (right_inner != nullptr && right_inner->is_few()))
-                {
-                    if (left_parent == parent)
-                        shift_right_inner(
-                            left_inner, inner, left_parent, parentslot - 1);
-                    else
-                        myres |= merge_inner(
-                            inner, right_inner, right_parent, parentslot);
-                }
-                // case : both the leaf and right leaves have extra data and our
-                // parent, choose the leaf with more data
-                else if (left_parent == right_parent)
-                {
-                    if (left_inner->slotuse <= right_inner->slotuse)
-                        shift_left_inner(
-                            inner, right_inner, right_parent, parentslot);
-                    else
-                        shift_right_inner(
-                            left_inner, inner, left_parent, parentslot - 1);
-                }
-                else
-                {
-                    if (left_parent == parent)
-                        shift_right_inner(
-                            left_inner, inner, left_parent, parentslot - 1);
-                    else
-                        shift_left_inner(
-                            inner, right_inner, right_parent, parentslot);
-                }
+            TLX_BTREE_ASSERT(rightchild->slotuse == 0);
+
+            free_node(rightchild);
+
+            // move parent slots/children to not point to rightchild
+            std::copy(
+                parent->slotkey + parentslot + 1, 
+                parent->slotkey + parent->slotuse,
+                parent->slotkey + parentslot);
+            std::copy(
+                parent->childid + parentslot + 2,
+                parent->childid + parent->slotuse + 1,
+                parent->childid + parentslot + 1);
+            
+            parent->slotuse--;
+
+            if (parentslot == 0) {
+                TLX_BTREE_ASSERT(key_greaterequal(parent->slotkey[parentslot],
+                    leftchild->key(leftchild->slotuse - 1)));
+            } else {
+            // this looks weird but its because leftchild is
+            // now the right child of (parentslot - 1) (because parentslot was deleted) 
+            // because of the merge
+            TLX_BTREE_ASSERT(key_lessequal(parent->slotkey[parentslot - 1],
+                    leftchild->key(0)));
             }
+        }
+         // case: the left takes from the right
+        else if (leftchild->is_underflow())
+        {
+            TLX_BTREE_ASSERT(rightchild->slotuse > leftchild->slotuse);
+            result_t res __attribute__((unused)) = 
+                    shift_left_leaf(leftchild, rightchild, parent, parentslot);
+            TLX_BTREE_ASSERT(!res.has(btree_update_lastkey));
+        }
+        // case: the right takes from the left
+        else
+        {
+            TLX_BTREE_ASSERT(rightchild->slotuse < leftchild->slotuse);
+            shift_right_leaf(leftchild, rightchild, parent, parentslot);
+        }
+    }
 
-            return myres;
+    // Redistributes/merges the keys of two adjacent inner children of the parent.
+    // It is assumed that the children need rebalancing/merging.
+    void redistribute_inner_children(InnerNode* parent, InnerNode* leftchild,
+                                    InnerNode* rightchild, unsigned int parentslot) {
+
+        TLX_BTREE_PRINT("redistribute_inner_children(" << parent << "," << leftchild
+                 << "," << rightchild << "," << parentslot << ")");
+        TLX_BTREE_ASSERT(leftchild->is_underflow() || rightchild->is_underflow());
+        TLX_BTREE_ASSERT(parentslot < parent->slotuse);
+        TLX_BTREE_ASSERT(parent->childid[parentslot] == leftchild);
+        TLX_BTREE_ASSERT(parent->childid[parentslot + 1] == rightchild);
+
+        // case: if both left and right leaves would underflow in case
+        // of a shift, then merging is necessary.
+        if ( (leftchild->is_few() && rightchild->is_underflow())
+            || (leftchild->is_underflow() && rightchild->is_few()))
+        {
+            merge_inner(leftchild, rightchild, parent, parentslot);
+
+            TLX_BTREE_ASSERT(rightchild->slotuse == 0);
+
+            free_node(rightchild);
+
+            std::copy(
+                parent->slotkey + parentslot + 1, 
+                parent->slotkey + parent->slotuse,
+                parent->slotkey + parentslot);
+            std::copy(
+                parent->childid + parentslot + 2,
+                parent->childid + parent->slotuse + 1,
+                parent->childid + parentslot + 1);
+            
+            parent->slotuse--;
+
+            if (parentslot == 0) {
+                TLX_BTREE_ASSERT(key_greaterequal(parent->slotkey[parentslot],
+                    leftchild->key(leftchild->slotuse - 1)));
+            } else {
+            // this looks weird but its because leftchild is
+            // now the right child of (parentslot - 1) (because parentslot was deleted) 
+            // because of the merge
+            TLX_BTREE_ASSERT(key_lessequal(parent->slotkey[parentslot - 1],
+                    leftchild->key(0)));
+            }
+        }
+         // case: the left takes from the right
+        else if (leftchild->is_underflow())
+        {
+            TLX_BTREE_ASSERT(rightchild->slotuse > leftchild->slotuse);
+            shift_left_inner(leftchild, rightchild, parent, parentslot);
+        }
+        // case: the right takes from the left
+        else
+        {
+            TLX_BTREE_ASSERT(rightchild->slotuse < leftchild->slotuse);
+            TLX_BTREE_ASSERT(rightchild->is_few());
+            shift_right_inner(leftchild, rightchild, parent, parentslot);
         }
     }
 
@@ -2838,8 +2780,8 @@ private:
                 {
                     if (leaf->slotuse >= 1)
                     {
-                        TLX_BTREE_PRINT("Scheduling lastkeyupdate: key " <<
-                                        leaf->key(leaf->slotuse - 1));
+                        /*TLX_BTREE_PRINT("Scheduling lastkeyupdate: key " <<
+                                        leaf->key(leaf->slotuse - 1));*/
                         myres |= result_t(
                             btree_update_lastkey, leaf->key(leaf->slotuse - 1));
                     }
@@ -3401,6 +3343,7 @@ private:
         TLX_BTREE_ASSERT(parent->childid[parentslot] == left);
 
         unsigned int shiftnum = (left->slotuse - right->slotuse) >> 1;
+        if (shiftnum == 0) shiftnum = 1;
 
         TLX_BTREE_PRINT("Shifting (leaf) " << shiftnum <<
                         " entries to right " << right <<
@@ -3568,13 +3511,13 @@ private:
     //! Recursively descend down the tree and verify each node
     void verify_node(const node* n, key_type* minkey, key_type* maxkey,
                      tree_stats& vstats) const {
-        TLX_BTREE_PRINT("verifynode " << n);
+        //TLX_BTREE_PRINT("verifynode " << n);
 
         if (n->is_leafnode())
         {
             const LeafNode* leaf = static_cast<const LeafNode*>(n);
 
-            tlx_die_unless(leaf == root_ || !leaf->is_underflow());
+            tlx_die_unless(leaf == root_ || leaf->slotuse >= leaf_slotmin - 1);
             tlx_die_unless(leaf->slotuse > 0);
 
             for (unsigned short slot = 0; slot < leaf->slotuse - 1; ++slot)
@@ -3594,7 +3537,7 @@ private:
             const InnerNode* inner = static_cast<const InnerNode*>(n);
             vstats.inner_nodes++;
 
-            tlx_die_unless(inner == root_ || !inner->is_underflow());
+            tlx_die_unless(inner == root_ || inner->slotuse >= inner_slotmin - 1);
             tlx_die_unless(inner->slotuse > 0);
 
             for (unsigned short slot = 0; slot < inner->slotuse - 1; ++slot)
@@ -3612,9 +3555,9 @@ private:
                 tlx_die_unless(subnode->level + 1 == inner->level);
                 verify_node(subnode, &subminkey, &submaxkey, vstats);
 
-                TLX_BTREE_PRINT("verify subnode " << subnode <<
+                /*TLX_BTREE_PRINT("verify subnode " << subnode <<
                                 ": " << subminkey <<
-                                " - " << submaxkey);
+                                " - " << submaxkey);*/
 
                 if (slot == 0)
                     *minkey = subminkey;
@@ -3625,7 +3568,7 @@ private:
                 if (slot == inner->slotuse)
                     *maxkey = submaxkey;
                 else
-                    tlx_die_unless(key_lessequal(inner->key(slot), submaxkey));
+                    tlx_die_unless(key_greaterequal(inner->key(slot), submaxkey));
 
                 if (inner->level == 1 && slot < inner->slotuse)
                 {

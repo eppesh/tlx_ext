@@ -186,12 +186,12 @@ public:
     //! Computed B+ tree parameter: The minimum number of key/data slots used
     //! in a leaf. If fewer slots are used, the leaf will be merged or slots
     //! shifted from it's siblings.
-    static const unsigned short leaf_slotmin = (leaf_slotmax / 2) - 1;
+    static const unsigned short leaf_slotmin = (leaf_slotmax / 2);
 
     //! Computed B+ tree parameter: The minimum number of key slots used
     //! in an inner node. If fewer slots are used, the inner node will be
     //! merged or slots shifted from it's siblings.
-    static const unsigned short inner_slotmin = (inner_slotmax / 2) - 1;
+    static const unsigned short inner_slotmin = (inner_slotmax / 2);
 
     //! Debug parameter: Enables expensive and thorough checking of the B+ tree
     //! invariants after each insert/erase operation.
@@ -2070,7 +2070,7 @@ private:
     }
 
     //! Split up a leaf node into two equally-filled sibling leaves. Returns the
-    //! new nodes and its insertion key in the two parameters.
+    //! new nodes and it's insertion key in the two parameters.
     void split_leaf_node(LeafNode* leaf,
                          key_type* out_newkey, node** out_newleaf) {
         TLX_BTREE_ASSERT(leaf->is_full());
@@ -2104,7 +2104,7 @@ private:
     }
 
     //! Split up an inner node into two equally-filled sibling nodes. Returns
-    //! the new nodes and its insertion key in the two parameters. Requires the
+    //! the new nodes and it's insertion key in the two parameters. Requires the
     //! slot of the item will be inserted, so the nodes will be the same size
     //! after the insert.
     void split_inner_node(InnerNode* inner, key_type* out_newkey,

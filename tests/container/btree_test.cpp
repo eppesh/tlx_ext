@@ -21,12 +21,22 @@
 #include <iostream>
 #include <set>
 #include <vector>
+#include <algorithm>
+#include <cassert>
+#include <iostream>
+#include <random>
+#include <string>
+#include <utility>
+
 
 #if TLX_MORE_TESTS
 static const bool tlx_more_tests = true;
 #else
 static const bool tlx_more_tests = false;
 #endif
+
+static const bool test_multi = false;
+static const auto seed = std::random_device{}();
 
 /******************************************************************************/
 // Instantiation Tests
@@ -51,10 +61,11 @@ struct SimpleTest {
     };
 
     static void test_empty() {
-        typedef tlx::btree_multiset<
-                unsigned int,
-                std::less<unsigned int>, traits_nodebug<unsigned int> >
-            btree_type;
+        typedef tlx::btree_set<
+            unsigned int,
+            std::less<unsigned int>, traits_nodebug<unsigned int> >
+        btree_type;
+        
 
         btree_type bt, bt2;
         bt.verify();
@@ -65,117 +76,246 @@ struct SimpleTest {
     }
 
     static void test_set_insert_erase_3200() {
-        typedef tlx::btree_multiset<
+       if (test_multi) {
+            typedef tlx::btree_multiset<
                 unsigned int,
                 std::less<unsigned int>, traits_nodebug<unsigned int> >
             btree_type;
 
-        btree_type bt;
-        bt.verify();
+            btree_type bt;
+            bt.verify();
 
-        srand(34234235);
-        for (unsigned int i = 0; i < 3200; i++)
-        {
-            die_unless(bt.size() == i);
-            bt.insert(rand() % 100);
-            die_unless(bt.size() == i + 1);
+            srand(seed);
+            for (unsigned int i = 0; i < 3200; i++)
+            {
+                die_unless(bt.size() == i);
+                bt.insert(rand() % 100);
+                die_unless(bt.size() == i + 1);
+            }
+
+            srand(seed);
+            for (unsigned int i = 0; i < 3200; i++)
+            {
+                die_unless(bt.size() == 3200 - i);
+                die_unless(bt.erase_one(rand() % 100));
+                die_unless(bt.size() == 3200 - i - 1);
+            }
+
+            die_unless(bt.empty());
+        } else {
+            // from frozenca's btree tests
+            typedef tlx::btree_set<
+                unsigned int,
+                std::less<unsigned int>, traits_nodebug<unsigned int> >
+            btree_type;
+
+            btree_type btree;
+            int n = 100;
+
+            //std::cout << __func__ << " seed: " << seed << std::endl;
+            std::mt19937 gen(seed);
+
+            std::vector<int> v(n);
+            std::iota(v.begin(), v.end(), 0);
+
+            unsigned long size = 0;
+            // random insert
+            std::ranges::shuffle(v, gen);
+            for (auto num : v) {
+                die_unless(btree.insert(num).second);
+                die_unless(btree.size() == ++size);
+            }
+
+            btree.verify();
+
+            // random lookup
+            std::ranges::shuffle(v, gen);
+            for (auto num : v) {
+              die_unless(btree.exists(num));
+            }
+            
+            // random erase
+            std::ranges::shuffle(v, gen);
+            for (auto num : v) {
+                bool res = btree.erase(num);
+                die_unless(res);
+                die_unless(btree.size() == --size);
+            }
         }
-
-        srand(34234235);
-        for (unsigned int i = 0; i < 3200; i++)
-        {
-            die_unless(bt.size() == 3200 - i);
-            die_unless(bt.erase_one(rand() % 100));
-            die_unless(bt.size() == 3200 - i - 1);
-        }
-
-        die_unless(bt.empty());
     }
 
     static void test_set_insert_erase_3200_descending() {
-        typedef tlx::btree_multiset<
+       if (test_multi) {
+            typedef tlx::btree_multiset<
                 unsigned int,
                 std::greater<unsigned int>, traits_nodebug<unsigned int> >
             btree_type;
 
-        btree_type bt;
+            btree_type bt;
 
-        srand(34234235);
-        for (unsigned int i = 0; i < 3200; i++)
-        {
-            die_unless(bt.size() == i);
-            bt.insert(rand() % 100);
-            die_unless(bt.size() == i + 1);
-        }
+            srand(seed);
+            for (unsigned int i = 0; i < 3200; i++)
+            {
+                die_unless(bt.size() == i);
+                bt.insert(rand() % 100);
+                die_unless(bt.size() == i + 1);
+            }
 
-        srand(34234235);
-        for (unsigned int i = 0; i < 3200; i++)
-        {
-            die_unless(bt.size() == 3200 - i);
-            die_unless(bt.erase_one(rand() % 100));
-            die_unless(bt.size() == 3200 - i - 1);
-        }
+            srand(seed);
+            for (unsigned int i = 0; i < 3200; i++)
+            {
+                die_unless(bt.size() == 3200 - i);
+                die_unless(bt.erase_one(rand() % 100));
+                die_unless(bt.size() == 3200 - i - 1);
+            }
 
-        die_unless(bt.empty());
-    }
-
-    static void test_map_insert_erase_3200() {
-        typedef tlx::btree_multimap<
-                unsigned int, std::string,
-                std::less<unsigned int>, traits_nodebug<unsigned int> >
-            btree_type;
-
-        btree_type bt;
-
-        srand(34234235);
-        for (unsigned int i = 0; i < 3200; i++)
-        {
-            die_unless(bt.size() == i);
-            bt.insert2(rand() % 100, "101");
-            die_unless(bt.size() == i + 1);
-        }
-
-        srand(34234235);
-        for (unsigned int i = 0; i < 3200; i++)
-        {
-            die_unless(bt.size() == 3200 - i);
-            die_unless(bt.erase_one(rand() % 100));
-            die_unless(bt.size() == 3200 - i - 1);
-        }
-
-        die_unless(bt.empty());
-        bt.verify();
-    }
-
-    static void test_map_insert_erase_3200_descending() {
-        typedef tlx::btree_multimap<
-                unsigned int, std::string,
+            die_unless(bt.empty());
+        } else {
+            // from frozenca's btree tests
+            typedef tlx::btree_set<
+                unsigned int,
                 std::greater<unsigned int>, traits_nodebug<unsigned int> >
             btree_type;
 
-        btree_type bt;
+            btree_type btree;
+            int n = 100;
 
-        srand(34234235);
-        for (unsigned int i = 0; i < 3200; i++)
-        {
-            die_unless(bt.size() == i);
-            bt.insert2(rand() % 100, "101");
-            die_unless(bt.size() == i + 1);
+            std::mt19937 gen(std::random_device{}());
+
+            std::vector<int> v(n);
+            std::iota(v.begin(), v.end(), 0);
+
+            unsigned long size = 0;
+
+            // random insert
+            std::ranges::shuffle(v, gen);
+            for (auto num : v) {
+              die_unless(btree.insert(num).second);
+              die_unless(btree.size() == ++size);
+            }
+
+            btree.verify();
+
+            // random lookup
+            std::ranges::shuffle(v, gen);
+            for (auto num : v) {
+              die_unless(btree.exists(num));
+            }
+            
+            // random erase
+            std::ranges::shuffle(v, gen);
+            for (auto num : v) {
+              die_unless(btree.erase(num));
+              die_unless(btree.size() == --size);
+            }
         }
+    }
 
-        srand(34234235);
-        for (unsigned int i = 0; i < 3200; i++)
-        {
-            die_unless(bt.size() == 3200 - i);
-            die_unless(bt.erase_one(rand() % 100));
-            die_unless(bt.size() == 3200 - i - 1);
+    static void test_map_insert_erase_3200() {
+        if (test_multi) {
+            typedef tlx::btree_multimap<
+                    unsigned int, std::string,
+                    std::less<unsigned int>, traits_nodebug<unsigned int> >
+                btree_type;
+
+            btree_type bt;
+
+            srand(seed);
+            for (unsigned int i = 0; i < 3200; i++)
+            {
+                die_unless(bt.size() == i);
+                bt.insert2(rand() % 100, "101");
+                die_unless(bt.size() == i + 1);
+            }
+
+            srand(seed);
+            for (unsigned int i = 0; i < 3200; i++)
+            {
+                die_unless(bt.size() == 3200 - i);
+                die_unless(bt.erase_one(rand() % 100));
+                die_unless(bt.size() == 3200 - i - 1);
+            }
+
+            die_unless(bt.empty());
+            bt.verify();
+        } else {
+            typedef tlx::btree_map<
+                    std::string, unsigned int,
+                    std::less<std::string>, traits_nodebug<unsigned int> >
+                btree_type;
+
+            btree_type btree;
+
+            // frozenca tests
+            btree["asd"] = 3;
+            btree["a"] = 6;
+            btree["bbb"] = 9;
+            btree["asdf"] = 8;
+            btree["asdf"] = 333;
+            die_unless(btree["asdf"] == 333);
+
+            btree.insert2("asdfgh", 200);
+            die_unless(btree["asdfgh"] == 200);
+
+            btree.verify();
+            die_unless(btree.size() == 5);
         }
+    }
 
-        die_unless(bt.empty());
-        bt.verify();
+    static void test_map_insert_erase_3200_descending() {
+        if (test_multi) {
+            typedef tlx::btree_multimap<
+                    unsigned int, std::string,
+                    std::greater<unsigned int>, traits_nodebug<unsigned int> >
+                btree_type;
+
+            btree_type bt;
+
+            srand(seed);
+            for (unsigned int i = 0; i < 3200; i++)
+            {
+                die_unless(bt.size() == i);
+                bt.insert2(rand() % 100, "101");
+                die_unless(bt.size() == i + 1);
+            }
+
+            srand(seed);
+            for (unsigned int i = 0; i < 3200; i++)
+            {
+                die_unless(bt.size() == 3200 - i);
+                die_unless(bt.erase_one(rand() % 100));
+                die_unless(bt.size() == 3200 - i - 1);
+            }
+
+            die_unless(bt.empty());
+            bt.verify();
+        } else {
+            typedef tlx::btree_map<
+                    std::string, unsigned int,
+                    std::greater<std::string>, traits_nodebug<unsigned int> >
+                btree_type;
+
+            btree_type btree;
+
+            // frozenca tests
+            btree["asd"] = 3;
+            btree["a"] = 6;
+            btree["bbb"] = 9;
+            btree["asdf"] = 8;
+            btree["asdf"] = 333;
+            die_unless(btree["asdf"] == 333);
+
+            btree.insert2("asdfgh", 200);
+            die_unless(btree["asdfgh"] == 200);
+
+            btree.verify();
+            die_unless(btree.size() == 5);
+        }
     }
 
     static void test2_map_insert_erase_strings() {
+        if (!test_multi) return;
+
         typedef tlx::btree_multimap<
                 std::string, unsigned int,
                 std::less<std::string>, traits_nodebug<std::string> >
@@ -209,7 +349,7 @@ struct SimpleTest {
         bt.verify();
     }
 
-    static void test_set_100000_uint64() {
+    static void test_map_100000_uint64() {
         tlx::btree_map<std::uint64_t, std::uint8_t> bt;
 
         for (std::uint64_t i = 10; i < 100000; ++i)
@@ -226,6 +366,8 @@ struct SimpleTest {
     }
 
     static void test_multiset_100000_uint32() {
+        if (!test_multi) return;
+
         tlx::btree_multiset<std::uint32_t> bt;
 
         for (std::uint64_t i = 0; i < 100000; ++i)
@@ -239,13 +381,14 @@ struct SimpleTest {
     }
 
     SimpleTest() {
+        std::cout << "seed: " << seed << std::endl;
         test_empty();
         test_set_insert_erase_3200();
         test_set_insert_erase_3200_descending();
         test_map_insert_erase_3200();
         test_map_insert_erase_3200_descending();
         test2_map_insert_erase_strings();
-        test_set_100000_uint64();
+        test_map_100000_uint64();
         test_multiset_100000_uint32();
     }
 };
@@ -293,6 +436,8 @@ struct traits_nodebug : tlx::btree_default_traits<KeyType, KeyType> {
 };
 
 void test_large_multiset(const unsigned int insnum, const unsigned int modulo) {
+    if (!test_multi) return;
+
     typedef tlx::btree_multiset<
             unsigned int,
             std::less<unsigned int>, traits_nodebug<unsigned int> > btree_type;
@@ -303,7 +448,7 @@ void test_large_multiset(const unsigned int insnum, const unsigned int modulo) {
     multiset_type set;
 
     // *** insert
-    srand(34234235);
+    srand(seed);
     for (unsigned int i = 0; i < insnum; i++)
     {
         unsigned int k = rand() % modulo;
@@ -329,7 +474,7 @@ void test_large_multiset(const unsigned int insnum, const unsigned int modulo) {
     die_unless(si == set.end());
 
     // *** existance
-    srand(34234235);
+    srand(seed);
     for (unsigned int i = 0; i < insnum; i++)
     {
         unsigned int k = rand() % modulo;
@@ -338,7 +483,7 @@ void test_large_multiset(const unsigned int insnum, const unsigned int modulo) {
     }
 
     // *** counting
-    srand(34234235);
+    srand(seed);
     for (unsigned int i = 0; i < insnum; i++)
     {
         unsigned int k = rand() % modulo;
@@ -347,7 +492,7 @@ void test_large_multiset(const unsigned int insnum, const unsigned int modulo) {
     }
 
     // *** deletion
-    srand(34234235);
+    srand(seed);
     for (unsigned int i = 0; i < insnum; i++)
     {
         unsigned int k = rand() % modulo;
@@ -369,6 +514,41 @@ void test_large_multiset(const unsigned int insnum, const unsigned int modulo) {
     die_unless(set.empty());
 }
 
+/*void test_large_set(const unsigned int insnum, const unsigned int modulo) {
+    // from frozenca's btree tests
+    typedef tlx::btree_set<
+        unsigned int,
+        std::greater<unsigned int>, traits_nodebug<unsigned int> >
+    btree_type;
+    
+    btree_type btree;
+    std::mt19937 gen(std::random_device{}());
+    std::vector<int> v(insnum);
+    std::iota(v.begin(), v.end(), 0);
+    unsigned long size = 0;
+    // random insert
+    std::ranges::shuffle(v, gen);
+    for (auto num : v) {
+      die_unless(btree.insert(num%modulo).second);
+      die_unless(btree.size() == ++size);
+    }
+
+    btree.verify();
+    // random lookup
+    std::ranges::shuffle(v, gen);
+    for (auto num : v) {
+      die_unless(btree.exists(num%modulo));
+    }
+    
+    // random erase
+    std::ranges::shuffle(v, gen);
+    for (auto num : v) {
+      die_unless(btree.erase(num));
+      die_unless(btree.size() == --size);
+    }
+}*/
+
+// TODO currently only multiset
 void test_large() {
     test_large_multiset(320, 1000);
     test_large_multiset(320, 10000);
@@ -380,19 +560,29 @@ void test_large() {
 }
 
 void test_large_sequence() {
+
+#if test_multi
     typedef tlx::btree_multiset<
             unsigned int,
             std::less<unsigned int>, traits_nodebug<unsigned int> > btree_type;
+
+    typedef std::multiset<unsigned int> stdset_type;
+#else
+    typedef tlx::btree_set<
+        unsigned int,
+        std::less<unsigned int>, traits_nodebug<unsigned int> > btree_type;
+
+    typedef std::set<unsigned int> stdset_type; 
+#endif
 
     btree_type bt;
 
     const unsigned int insnum = 10000;
 
-    typedef std::multiset<unsigned int> multiset_type;
-    multiset_type set;
+    stdset_type set;
 
     // *** insert
-    srand(34234235);
+    //srand(seed);
     for (unsigned int i = 0; i < insnum; i++)
     {
         unsigned int k = i;
@@ -409,7 +599,7 @@ void test_large_sequence() {
 
     // *** iterate
     btree_type::iterator bi = bt.begin();
-    multiset_type::const_iterator si = set.begin();
+    stdset_type::const_iterator si = set.begin();
     for ( ; bi != bt.end() && si != set.end(); ++bi, ++si)
     {
         die_unless(*si == bi.key());
@@ -418,7 +608,7 @@ void test_large_sequence() {
     die_unless(si == set.end());
 
     // *** existance
-    srand(34234235);
+    //srand(seed);
     for (unsigned int i = 0; i < insnum; i++)
     {
         unsigned int k = i;
@@ -427,7 +617,7 @@ void test_large_sequence() {
     }
 
     // *** counting
-    srand(34234235);
+    //srand(seed);
     for (unsigned int i = 0; i < insnum; i++)
     {
         unsigned int k = i;
@@ -436,7 +626,7 @@ void test_large_sequence() {
     }
 
     // *** deletion
-    srand(34234235);
+    //srand(seed);
     for (unsigned int i = 0; i < insnum; i++)
     {
         unsigned int k = i;
@@ -462,6 +652,8 @@ void test_large_sequence() {
 // Upper/Lower Bound Tests
 
 void test_bounds_multimap(const unsigned int insnum, const unsigned int modulo) {
+    if (!test_multi) return;
+
     typedef tlx::btree_multimap<
             unsigned int, unsigned int,
             std::less<unsigned int>, traits_nodebug<unsigned int> > btree_type;
@@ -471,7 +663,7 @@ void test_bounds_multimap(const unsigned int insnum, const unsigned int modulo) 
     multiset_type set;
 
     // *** insert
-    srand(34234235);
+    srand(seed);
     for (unsigned int i = 0; i < insnum; i++)
     {
         unsigned int k = rand() % modulo;
@@ -500,7 +692,7 @@ void test_bounds_multimap(const unsigned int insnum, const unsigned int modulo) 
     }
 
     // *** existance
-    srand(34234235);
+    srand(seed);
     for (unsigned int i = 0; i < insnum; i++)
     {
         unsigned int k = rand() % modulo;
@@ -509,7 +701,7 @@ void test_bounds_multimap(const unsigned int insnum, const unsigned int modulo) 
     }
 
     // *** counting
-    srand(34234235);
+    srand(seed);
     for (unsigned int i = 0; i < insnum; i++)
     {
         unsigned int k = rand() % modulo;
@@ -567,7 +759,7 @@ void test_bounds_multimap(const unsigned int insnum, const unsigned int modulo) 
     }
 
     // *** deletion
-    srand(34234235);
+    srand(seed);
     for (unsigned int i = 0; i < insnum; i++)
     {
         unsigned int k = rand() % modulo;
@@ -597,13 +789,15 @@ void test_bounds() {
 // Test Iterators
 
 void test_iterator1() {
+    if (!test_multi) return;
+
     typedef tlx::btree_multiset<
             unsigned int,
             std::less<unsigned int>, traits_nodebug<unsigned int> > btree_type;
 
     std::vector<unsigned int> vector;
 
-    srand(34234235);
+    srand(seed);
     for (unsigned int i = 0; i < 3200; i++)
     {
         vector.push_back(rand() % 1000);
@@ -620,7 +814,7 @@ void test_iterator1() {
     btree_type bt2 = bt;
 
     // empty out the first bt
-    srand(34234235);
+    srand(seed);
     for (unsigned int i = 0; i < 3200; i++)
     {
         die_unless(bt.size() == 3200 - i);
@@ -659,13 +853,15 @@ void test_iterator1() {
 }
 
 void test_iterator2() {
+    if (!test_multi) return;
+
     typedef tlx::btree_multimap<
             unsigned int, unsigned int,
             std::less<unsigned int>, traits_nodebug<unsigned int> > btree_type;
 
     std::vector<btree_type::value_type> vector;
 
-    srand(34234235);
+    srand(seed);
     for (unsigned int i = 0; i < 3200; i++)
     {
         vector.push_back(btree_type::value_type(rand() % 1000, 0));
@@ -682,7 +878,7 @@ void test_iterator2() {
     btree_type bt2 = bt;
 
     // empty out the first bt
-    srand(34234235);
+    srand(seed);
     for (unsigned int i = 0; i < 3200; i++)
     {
         die_unless(bt.size() == 3200 - i);
@@ -1370,7 +1566,10 @@ void test_iterator5() {
     }
 }
 
+// TODO test_multi
 void test_erase_iterator1() {
+    if (!test_multi) return;
+
     typedef tlx::btree_multimap<
             int, int,
             std::less<int>, traits_nodebug<int> > btree_type;
@@ -1441,6 +1640,12 @@ struct TestData {
     { }
 };
 
+std::ostream& operator<<(std::ostream& os, const TestData& d)
+{
+    os << '(' << d.a << ',' << d.b << ')';
+    return os;
+}
+
 struct TestCompare {
     unsigned int somevalue;
 
@@ -1454,25 +1659,64 @@ struct TestCompare {
 };
 
 void test_struct() {
-    typedef tlx::btree_multiset<struct TestData, struct TestCompare,
-                                struct traits_nodebug<struct TestData> > btree_type;
+    if (test_multi) {
+        typedef tlx::btree_multiset<struct TestData, struct TestCompare,
+                                    struct traits_nodebug<struct TestData> > btree_type;
 
-    btree_type bt(TestCompare(42));
+        btree_type bt(TestCompare(42));
 
-    srand(34234235);
-    for (unsigned int i = 0; i < 320; i++)
-    {
-        die_unless(bt.size() == i);
-        bt.insert(rand() % 100);
-        die_unless(bt.size() == i + 1);
-    }
+        srand(seed);
+        for (unsigned int i = 0; i < 320; i++)
+        {
+            die_unless(bt.size() == i);
+            bt.insert(rand() % 100);
+            die_unless(bt.size() == i + 1);
+        }
 
-    srand(34234235);
-    for (unsigned int i = 0; i < 320; i++)
-    {
-        die_unless(bt.size() == 320 - i);
-        die_unless(bt.erase_one(rand() % 100));
-        die_unless(bt.size() == 320 - i - 1);
+        srand(seed);
+        for (unsigned int i = 0; i < 320; i++)
+        {
+            die_unless(bt.size() == 320 - i);
+            die_unless(bt.erase_one(rand() % 100));
+            die_unless(bt.size() == 320 - i - 1);
+        }
+    } else {
+        // from frozenca's btree tests
+        typedef tlx::btree_set<struct TestData, struct TestCompare,
+                                    struct traits_nodebug<struct TestData> >
+        btree_type;
+
+        btree_type btree(TestCompare(42));
+
+        int n = 320;
+        std::mt19937 gen(seed);
+        std::vector<int> v(n);
+
+        std::iota(v.begin(), v.end(), 0);
+        unsigned long size = 0;
+
+        // random insert
+        std::ranges::shuffle(v, gen);
+        for (auto num : v) {
+            die_unless(btree.insert(num).second);
+            die_unless(btree.size() == ++size);
+        }
+
+        btree.verify();
+
+        // random lookup
+        std::ranges::shuffle(v, gen);
+        for (auto num : v) {
+          die_unless(btree.exists(num));
+        }
+        
+        // random erase
+        std::ranges::shuffle(v, gen);
+        for (auto num : v) {
+            bool res = btree.erase(num);
+            die_unless(res);
+            die_unless(btree.size() == --size);
+        }
     }
 }
 
@@ -1480,20 +1724,43 @@ void test_struct() {
 // Test Relations
 
 void test_relations() {
+#if test_multi
     typedef tlx::btree_multiset<
             unsigned int,
             std::less<unsigned int>, traits_nodebug<unsigned int> > btree_type;
+#else
+    typedef tlx::btree_set<
+        unsigned int,
+        std::less<unsigned int>, traits_nodebug<unsigned int> > btree_type;
+#endif
 
     btree_type bt1, bt2;
 
-    srand(34234236);
-    for (unsigned int i = 0; i < 320; i++)
-    {
-        unsigned int key = rand() % 1000;
+    if (test_multi) {
+        srand(seed);
+        for (unsigned int i = 0; i < 320; i++)
+        {
+            unsigned int key = rand() % 1000;
 
-        bt1.insert(key);
-        bt2.insert(key);
+            bt1.insert(key);
+            bt2.insert(key);
+        }
+    } else {
+        // from frozenca's btree tests
+        btree_type btree;
+        int n = 320;
+        
+        std::mt19937 gen(seed);
+        std::vector<int> v(n);
+        std::iota(v.begin(), v.end(), 0);
+        std::ranges::shuffle(v, gen);
+
+        for (auto num : v) {
+            bt1.insert(num);
+            bt2.insert(num);
+        }
     }
+    
 
     die_unless(bt1 == bt2);
 
@@ -1527,13 +1794,16 @@ void test_relations() {
 // Test Bulk Load
 
 void test_bulkload_set_instance(size_t numkeys, unsigned int mod) {
+    // TODO this isn't very important rn but implement later please
+    if (!test_multi) return;
+
     typedef tlx::btree_multiset<
             unsigned int,
             std::less<unsigned int>, traits_nodebug<unsigned int> > btree_type;
 
     std::vector<unsigned int> keys(numkeys);
 
-    srand(34234235);
+    srand(seed);
     for (unsigned int i = 0; i < numkeys; i++)
     {
         keys[i] = rand() % mod;
@@ -1553,13 +1823,16 @@ void test_bulkload_set_instance(size_t numkeys, unsigned int mod) {
 }
 
 void test_bulkload_map_instance(size_t numkeys, unsigned int mod) {
+    // TODO see above todo
+    if (!test_multi) return;
+
     typedef tlx::btree_multimap<
             int, std::string,
             std::less<int>, traits_nodebug<int> > btree_type;
 
     std::vector<std::pair<int, std::string> > pairs(numkeys);
 
-    srand(34234235);
+    srand(seed);
     for (unsigned int i = 0; i < numkeys; i++)
     {
         pairs[i].first = rand() % mod;
@@ -1598,7 +1871,7 @@ void test_bulkload() {
 /******************************************************************************/
 
 int main() {
-
+    std::cout << "hello world\n";
     test_simple();
     if (tlx_more_tests) {
         test_large();
