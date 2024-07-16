@@ -121,7 +121,10 @@ template <typename Key, typename Value,
           typename Compare = std::less<Key>,
           typename Traits = btree_default_traits<Key, Value>,
           bool Duplicates = false,
-          typename Allocator = std::allocator<Value> >
+          typename Allocator = std::allocator<Value>,
+          typename Mutex = std::mutex,
+          typename ConditionVariable = std::condition_variable,
+          typename UniqueLock = std::unique_lock<Mutex>>
 class BTree
 {
 public:
@@ -146,6 +149,14 @@ public:
     //! of the B+ tree
     typedef Traits traits;
 
+    // TODO desc
+    typedef Mutex mutex_type;
+
+    // TODO desc
+    typedef ConditionVariable cv_type;
+
+    typedef UniqueLock lock_type;
+
     //! Sixth template parameter: Allow duplicate keys in the B+ tree. Used to
     //! implement multiset and multimap.
     static const bool allow_duplicates = Duplicates;
@@ -166,7 +177,8 @@ public:
 
     //! Typedef of our own type
     typedef BTree<key_type, value_type, key_of_value, key_compare,
-                  traits, allow_duplicates, allocator_type> Self;
+                  traits, allow_duplicates, allocator_type, mutex_type,
+                  cv_type, lock_type> Self;
 
     //! Size type used to count keys
     typedef size_t size_type;
@@ -219,6 +231,14 @@ private:
         //! pointers
         unsigned short slotuse;
 
+        // TODO desc
+        mutex_type mutex;
+        cv_type readcv;
+        cv_type writecv;
+        unsigned int numreader = 0;
+        bool haswriter = false;
+        int writerswaiting = 0;
+
         //! Delayed initialisation of constructed node.
         void initialize(const unsigned short l) {
             level = l;
@@ -228,6 +248,66 @@ private:
         //! True if this is a leaf node.
         bool is_leafnode() const {
             return (level == 0);
+        }
+
+        void readlock() {
+            lock_type lock(mutex);
+            if (haswriter) {
+                readcv.wait(lock, [this](){!this->haswriter;});
+            }
+            numreader++;
+            lock.unlock();
+        }
+
+        void upgradelock() {
+            lock_type lock(mutex);
+            if (numreader > 1 || haswriter) {
+                writerswaiting++;
+                writecv.wait(lock, [this]() {
+                    this->numreader <= 1 && !this->haswriter;
+                });
+            }
+            TLX_BTREE_ASSERT(numreader == 1);
+            numreader--;
+            haswriter = true;
+            writerswaiting--;
+        }
+
+        void writelock() {
+            lock_type lock(mutex);
+            if (numreader > 0 || haswriter) {
+                writerswaiting++;
+                writecv.wait(lock, [this](){
+                    this->numreader == 0 && !this->haswriter;
+                    });
+            }
+            writerswaiting--;
+            TLX_BTREE_ASSERT(!haswriter);
+            haswriter = true;
+            lock.unlock();
+        }
+
+        void read_unlock() {
+            lock_type lock(mutex);
+            numreader--;
+            if (numreader == 0) {
+                lock.unlock();
+                writecv.notify_one();
+            } else {
+                lock.unlock();
+            }
+        }
+
+        void write_unlock() {
+            lock_type lock(mutex);
+            haswriter = false;
+            if (writerswaiting > 0) {
+                lock.unlock();
+                writecv.notify_one();
+            } else {
+                lock.unlock();
+                readcv.notify_all();
+            }
         }
     };
 
@@ -1878,6 +1958,7 @@ private:
     std::pair<iterator, bool>
     insert_start(const key_type& key, const value_type& value) {
         //TLX_BTREE_PRINT("insert start");
+        
         if (root_ == nullptr)
         {
             root_ = head_leaf_ = tail_leaf_ = allocate_leaf();
@@ -2435,10 +2516,16 @@ public:
 
         if (!root_) return;
 
-        result_t result = erase_iter_descend(
-            iter, root_, nullptr, nullptr, nullptr, nullptr, nullptr, 0);
+        bool successful;
+        if (!allow_duplicates) {
+            successful = erase_one(iter.key());
+        } else {
+            result_t result = erase_iter_descend(
+                iter, root_, nullptr, nullptr, nullptr, nullptr, nullptr, 0);
+            successful = !result.has(btree_not_found);
+        }
 
-        if (!result.has(btree_not_found))
+        if (successful)
             --stats_.size;
 
 #ifdef TLX_BTREE_DEBUG
@@ -2539,19 +2626,15 @@ private:
                     redistribute_leaf_children(parent, leftchild, rightchild, fake_slot);
                     if (rightchild->slotuse != 0) {
                         // assuming merge didn't happen
-                        if (key_greaterequal(key, rightchild->key(0)) &&
+                        if (key_greater(key, parent->key(slot)) &&
                                 slot == fake_slot) {
                             slot++;
-                        } else if (key_greater(rightchild->key(0), key) &&
+                        } else if (key_greaterequal(parent->key(fake_slot), key) &&
                                 slot != fake_slot) {
-                                    slot--;
+                            slot--;
                         }
                     } else if (slot != fake_slot) { // && rightchild->slotuse == 0
                         slot--;
-                    }
-                    if (find_lower(parent, key) != slot) {
-                        return btree_not_found;
-                        // TODO delete
                     }
                     TLX_BTREE_ASSERT(find_lower(parent, key) == slot);
                 }
@@ -2574,15 +2657,20 @@ private:
                     redistribute_inner_children(parent, leftchild, rightchild, fake_slot);
                     if (rightchild->slotuse != 0) {
                         // assuming merge didn't happen
-                        if (key_greaterequal(key, rightchild->key(0)) &&
+                        if (key_greater(key, parent->key(slot)) &&
                                 slot == fake_slot) {
                             slot++;
-                        } else if (key_greater(rightchild->key(0), key) &&
+                        } else if (key_greaterequal(parent->key(fake_slot), key) &&
                                 slot != fake_slot) {
-                                    slot--;
+                            slot--;
                         }
                     } else if (slot != fake_slot) { // && rightchild->slotuse == 0
                         slot--;
+                    }
+                    if (!(find_lower(parent, key) == slot)) {
+                        int fl = find_lower(parent, key);
+                        assert(fl == 0);
+                        // TODO delete
                     }
                     TLX_BTREE_ASSERT(find_lower(parent, key) == slot);
                 }
@@ -2733,6 +2821,7 @@ private:
                                 node* left, node* right,
                                 InnerNode* left_parent, InnerNode* right_parent,
                                 InnerNode* parent, unsigned int parentslot) {
+
         if (curr->is_leafnode())
         {
             LeafNode* leaf = static_cast<LeafNode*>(curr);
