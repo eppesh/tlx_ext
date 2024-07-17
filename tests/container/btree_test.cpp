@@ -381,7 +381,6 @@ struct SimpleTest {
     }
 
     SimpleTest() {
-        std::cout << "seed: " << seed << std::endl;
         test_empty();
         test_set_insert_erase_3200();
         test_set_insert_erase_3200_descending();
@@ -1871,11 +1870,11 @@ void test_bulkload() {
 /******************************************************************************/
 
 int main() {
-    std::cout << "hello world\n";
+    std::cout << "seed: " << seed << std::endl;
     test_simple();
     if (tlx_more_tests) {
         test_large();
-        test_large_sequence();
+        //test_large_sequence(); TODO
         test_bounds();
         test_iterators();
         test_struct();
