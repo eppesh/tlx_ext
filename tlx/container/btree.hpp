@@ -1973,7 +1973,6 @@ private:
                 //TLX_BTREE_PRINT("BTree::insert_start: make new root, root is LeafNode");
                 key_type rightkey = key_type();
                 node* rightleaf = nullptr;
-                // TODO make sure split works
                 split_leaf_node(root, &rightkey, &rightleaf);
 
                 /* deleted: need root to still be the root
@@ -2006,7 +2005,6 @@ private:
                 key_type rightkey = key_type();
                 node* rightleaf = nullptr;
 
-                // TODO make sure split works
                 split_inner_node(root, &rightkey, &rightleaf);
 
                 InnerNode* newroot = allocate_inner(root_->level + 1);
@@ -2474,6 +2472,8 @@ public:
             }
         }
 
+        if (self_verify) verify();
+
         result_t result = erase_one_descend(
             key, root_);
 
@@ -2623,8 +2623,8 @@ private:
                // it's totally fine for both to be few
                 if (leftchild->is_underflow() || rightchild->is_underflow()) {
                     TLX_BTREE_PRINT("erase one descend: leaf redistribute");
-                    redistribute_leaf_children(parent, leftchild, rightchild, fake_slot);
-                    if (rightchild->slotuse != 0) {
+                    redistribute_leaf_children(parent, leftchild, &rightchild, fake_slot);
+                    if (rightchild != nullptr) {
                         // assuming merge didn't happen
                         if (key_greater(key, parent->key(slot)) &&
                                 slot == fake_slot) {
@@ -2654,8 +2654,8 @@ private:
                 // it's totally fine for both to be few
                 if (leftchild->is_underflow() || rightchild->is_underflow()) {
                     TLX_BTREE_PRINT("erase one descend: inner redistribute");
-                    redistribute_inner_children(parent, leftchild, rightchild, fake_slot);
-                    if (rightchild->slotuse != 0) {
+                    redistribute_inner_children(parent, leftchild, &rightchild, fake_slot);
+                    if (rightchild != nullptr) {
                         // assuming merge didn't happen
                         if (key_greater(key, parent->key(slot)) &&
                                 slot == fake_slot) {
@@ -2667,14 +2667,11 @@ private:
                     } else if (slot != fake_slot) { // && rightchild->slotuse == 0
                         slot--;
                     }
-                    if (!(find_lower(parent, key) == slot)) {
-                        int fl = find_lower(parent, key);
-                        assert(fl == 0);
-                        // TODO delete
-                    }
                     TLX_BTREE_ASSERT(find_lower(parent, key) == slot);
                 }
             }
+
+            if (self_verify) verify();
 
             return erase_one_descend(key, parent->childid[slot]);
         }
@@ -2683,8 +2680,8 @@ private:
     // Redistributes/merges the data of two adjacent leaf children of the parent.
     // It is assumed that the children need rebalancing/merging.
     void redistribute_leaf_children(InnerNode* parent, LeafNode* leftchild,
-                                    LeafNode* rightchild, unsigned int parentslot) {
-        
+                                    LeafNode** rightchildp, unsigned int parentslot) {
+        LeafNode* rightchild = *rightchildp;
         // TODO: this is a random place to put this todo, but uncomment the prints
         TLX_BTREE_PRINT("redistribute_leaf_children(" << parent << "," << leftchild
                  << "," << rightchild << "," << parentslot << ")");
@@ -2702,6 +2699,7 @@ private:
             TLX_BTREE_ASSERT(rightchild->slotuse == 0);
 
             free_node(rightchild);
+            *rightchildp = nullptr;
 
             // move parent slots/children to not point to rightchild
             std::copy(
@@ -2745,8 +2743,8 @@ private:
     // Redistributes/merges the keys of two adjacent inner children of the parent.
     // It is assumed that the children need rebalancing/merging.
     void redistribute_inner_children(InnerNode* parent, InnerNode* leftchild,
-                                    InnerNode* rightchild, unsigned int parentslot) {
-
+                                    InnerNode** rightchildp, unsigned int parentslot) {
+        InnerNode* rightchild = *rightchildp;
         TLX_BTREE_PRINT("redistribute_inner_children(" << parent << "," << leftchild
                  << "," << rightchild << "," << parentslot << ")");
         TLX_BTREE_ASSERT(leftchild->is_underflow() || rightchild->is_underflow());
@@ -2764,6 +2762,7 @@ private:
             TLX_BTREE_ASSERT(rightchild->slotuse == 0);
 
             free_node(rightchild);
+            *rightchildp = nullptr;
 
             std::copy(
                 parent->slotkey + parentslot + 1, 
