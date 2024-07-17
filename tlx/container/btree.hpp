@@ -217,20 +217,11 @@ public:
 
     //! \}
 
-private:
-    //! \name Node Classes for In-Memory Nodes
+public:
+    //! \name Lock Helper Struct
     //! \{
 
-    //! The header structure of each node in-memory. This structure is extended
-    //! by InnerNode or LeafNode.
-    struct node {
-        //! Level in the b-tree, if level == 0 -> leaf node
-        unsigned short level;
-
-        //! Number of key slotuse use, so the number of valid children or data
-        //! pointers
-        unsigned short slotuse;
-
+    struct LockHelper {
         // TODO desc
         mutex_type mutex;
         cv_type readcv;
@@ -238,17 +229,6 @@ private:
         unsigned int numreader = 0;
         bool haswriter = false;
         int writerswaiting = 0;
-
-        //! Delayed initialisation of constructed node.
-        void initialize(const unsigned short l) {
-            level = l;
-            slotuse = 0;
-        }
-
-        //! True if this is a leaf node.
-        bool is_leafnode() const {
-            return (level == 0);
-        }
 
         void readlock() {
             lock_type lock(mutex);
@@ -308,6 +288,37 @@ private:
                 lock.unlock();
                 readcv.notify_all();
             }
+        }
+    };
+
+    //! \}
+
+private:
+    //! \name Node Classes for In-Memory Nodes
+    //! \{
+
+    //! The header structure of each node in-memory. This structure is extended
+    //! by InnerNode or LeafNode.
+    struct node {
+        //! Level in the b-tree, if level == 0 -> leaf node
+        unsigned short level;
+
+        //! Number of key slotuse use, so the number of valid children or data
+        //! pointers
+        unsigned short slotuse;
+
+        // TODO desc
+        LockHelper lock;
+
+        //! Delayed initialisation of constructed node.
+        void initialize(const unsigned short l) {
+            level = l;
+            slotuse = 0;
+        }
+
+        //! True if this is a leaf node.
+        bool is_leafnode() const {
+            return (level == 0);
         }
     };
 
@@ -1156,6 +1167,9 @@ private:
 
     //! Pointer to the B+ tree's root node, either leaf or inner node.
     node* root_;
+
+    // TODO desc
+    LockHelper rootlock_;
 
     //! Pointer to first leaf in the double linked leaf chain.
     LeafNode* head_leaf_;
