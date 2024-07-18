@@ -1381,6 +1381,7 @@ public:
 
     //! Frees all key/data pairs and all nodes of the tree.
     void clear() {
+        rootlock_.writelock();
         if (root_)
         {
             clear_recursive(root_);
@@ -1389,14 +1390,17 @@ public:
             root_ = nullptr;
             head_leaf_ = tail_leaf_ = nullptr;
 
+            //TODO stats lock??
             stats_ = tree_stats();
         }
 
         TLX_BTREE_ASSERT(stats_.size == 0);
+        rootlock_.write_unlock();
     }
 
 private:
     //! Recursively free up nodes.
+    // TODO locking
     void clear_recursive(node* n) {
         if (n->is_leafnode())
         {
@@ -1575,7 +1579,7 @@ private:
 
     //! \}
 
-public:
+public: // TODO lock stuff?
     //! \name Access Functions to the Item Count
     //! \{
 
@@ -1703,7 +1707,9 @@ public:
 
     //! Tries to locate a key in the B+ tree and returns the number of identical
     //! key entries found.
-    size_type count(const key_type& key) const {
+    size_type count(const key_type& key) {
+        if (!allow_duplicates) return exists(key) ? 1 : 0;
+
         const node* n = root_;
         if (!n) return 0;
 
@@ -1735,6 +1741,7 @@ public:
 
     //! Searches the B+ tree and returns an iterator to the first pair equal to
     //! or greater than key, or end() if all keys are smaller.
+    // TODO lb and ub not very important
     iterator lower_bound(const key_type& key) {
         node* n = root_;
         if (!n) return end();
@@ -1847,6 +1854,7 @@ public:
 
     //! Total ordering relation of B+ trees of the same type. It uses
     //! std::lexicographical_compare() for the actual comparison of elements.
+    // TODO lock help!!!
     bool operator < (const BTree& other) const {
         return std::lexicographical_compare(
             begin(), end(), other.begin(), other.end());
@@ -1869,7 +1877,7 @@ public:
 
     //! \}
 
-public:
+public: // TODO skipping these two sections
     //! \name Fast Copy: Assign Operator and Copy Constructors
     //! \{
 
@@ -1999,7 +2007,7 @@ private:
     std::pair<iterator, bool>
     insert_start(const key_type& key, const value_type& value) {
         //TLX_BTREE_PRINT("insert start");
-        
+        rootlock_.writelock();
         if (root_ == nullptr)
         {
             root_ = head_leaf_ = tail_leaf_ = allocate_leaf();
@@ -2186,6 +2194,7 @@ private:
 
     //! Split up a leaf node into two equally-filled sibling leaves. Returns the
     //! new nodes and its insertion key in the two parameters.
+    // TODO lock
     void split_leaf_node(LeafNode* leaf,
                          key_type* out_newkey, node** out_newleaf) {
         TLX_BTREE_ASSERT(leaf->is_full());
