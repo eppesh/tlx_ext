@@ -236,7 +236,6 @@ public:
                 readcv.wait(lock, [this](){return !this->haswriter;});
             }
             numreader++;
-            lock.unlock();
         }
 
         void upgradelock() {
@@ -264,28 +263,23 @@ public:
             writerswaiting--;
             TLX_BTREE_ASSERT(!haswriter);
             haswriter = true;
-            lock.unlock();
         }
 
         void read_unlock() {
             lock_type lock(mutex);
+            TLX_BTREE_ASSERT(numreader >= 1);
             numreader--;
-            if (numreader == 0) {
-                lock.unlock();
+            if (numreader == 0)
                 writecv.notify_one();
-            } else {
-                lock.unlock();
-            }
         }
 
         void write_unlock() {
             lock_type lock(mutex);
+            TLX_BTREE_ASSERT(haswriter);
             haswriter = false;
             if (writerswaiting > 0) {
-                lock.unlock();
                 writecv.notify_one();
             } else {
-                lock.unlock();
                 readcv.notify_all();
             }
         }
