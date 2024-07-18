@@ -233,7 +233,7 @@ public:
         void readlock() {
             lock_type lock(mutex);
             if (haswriter) {
-                readcv.wait(lock, [this](){!this->haswriter;});
+                readcv.wait(lock, [this](){return !this->haswriter;});
             }
             numreader++;
             lock.unlock();
@@ -244,7 +244,7 @@ public:
             if (numreader > 1 || haswriter) {
                 writerswaiting++;
                 writecv.wait(lock, [this]() {
-                    this->numreader <= 1 && !this->haswriter;
+                    return this->numreader <= 1 && !this->haswriter;
                 });
             }
             TLX_BTREE_ASSERT(numreader == 1);
@@ -258,8 +258,8 @@ public:
             if (numreader > 0 || haswriter) {
                 writerswaiting++;
                 writecv.wait(lock, [this](){
-                    this->numreader == 0 && !this->haswriter;
-                    });
+                    return this->numreader == 0 && !this->haswriter;
+                });
             }
             writerswaiting--;
             TLX_BTREE_ASSERT(!haswriter);
@@ -1614,34 +1614,53 @@ public:
 
     //! Non-STL function checking whether a key is in the B+ tree. The same as
     //! (find(k) != end()) or (count() != 0).
-    bool exists(const key_type& key) const {
-        const node* n = root_;
-        if (!n) return false;
+    bool exists(const key_type& key) {
+        rootlock_.readlock();
+        node* n = root_;
+        if (!n) {
+            rootlock_.read_unlock();
+            return false;
+        }
+        n->lock.readlock();
 
         while (!n->is_leafnode())
         {
-            const InnerNode* inner = static_cast<const InnerNode*>(n);
+            InnerNode* inner = static_cast<InnerNode*>(n);
             unsigned short slot = find_lower(inner, key);
 
+            inner->childid[slot]->lock.readlock();
+            inner->lock.read_unlock();
             n = inner->childid[slot];
         }
 
-        const LeafNode* leaf = static_cast<const LeafNode*>(n);
+
+        LeafNode* leaf = static_cast<LeafNode*>(n);
 
         unsigned short slot = find_lower(leaf, key);
-        return (slot < leaf->slotuse && key_equal(key, leaf->key(slot)));
+        auto res = (slot < leaf->slotuse && key_equal(key, leaf->key(slot)));
+        leaf->lock.read_unlock();
+        return res;
     }
 
     //! Tries to locate a key in the B+ tree and returns an iterator to the
     //! key/data slot if found. If unsuccessful it returns end().
     iterator find(const key_type& key) {
+        rootlock_.readlock();
+
         node* n = root_;
-        if (!n) return end();
+        if (!n) {
+            rootlock_.read_unlock();
+            return end();
+        }
+        n->lock.readlock();
 
         while (!n->is_leafnode())
         {
-            const InnerNode* inner = static_cast<const InnerNode*>(n);
+            InnerNode* inner = static_cast<InnerNode*>(n);
             unsigned short slot = find_lower(inner, key);
+
+            inner->childid[slot]->lock.readlock();
+            inner->lock.read_unlock();
 
             n = inner->childid[slot];
         }
@@ -1649,30 +1668,44 @@ public:
         LeafNode* leaf = static_cast<LeafNode*>(n);
 
         unsigned short slot = find_lower(leaf, key);
-        return (slot < leaf->slotuse && key_equal(key, leaf->key(slot)))
+        
+        auto res = (slot < leaf->slotuse && key_equal(key, leaf->key(slot)))
                ? iterator(leaf, slot) : end();
+        leaf->lock.read_unlock();
+        return res;
     }
 
     //! Tries to locate a key in the B+ tree and returns an constant iterator to
     //! the key/data slot if found. If unsuccessful it returns end().
-    const_iterator find(const key_type& key) const {
-        const node* n = root_;
-        if (!n) return end();
+    //! TODO not supported due to issues with const + locking
+    /*const_iterator find(const key_type& key) {
+        rootlock_.readlock();
+        node* n = root_;
+        if (!n) {
+            rootlock_.read_unlock();
+            return end();
+        }
+        n->lock.readlock();
 
         while (!n->is_leafnode())
         {
             const InnerNode* inner = static_cast<const InnerNode*>(n);
             unsigned short slot = find_lower(inner, key);
 
+            inner->childid[slot]->lock.readlock();
+            inner->lock.read_unlock();
             n = inner->childid[slot];
         }
 
         const LeafNode* leaf = static_cast<const LeafNode*>(n);
 
         unsigned short slot = find_lower(leaf, key);
-        return (slot < leaf->slotuse && key_equal(key, leaf->key(slot)))
+        
+        auto res = (slot < leaf->slotuse && key_equal(key, leaf->key(slot)))
                ? const_iterator(leaf, slot) : end();
-    }
+        leaf->lock.read_unlock();
+        return res;
+    }*/
 
     //! Tries to locate a key in the B+ tree and returns the number of identical
     //! key entries found.

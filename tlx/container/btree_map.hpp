@@ -333,7 +333,7 @@ public:
 
     //! Non-STL function checking whether a key is in the B+ tree. The same as
     //! (find(k) != end()) or (count() != 0).
-    bool exists(const key_type& key) const {
+    bool exists(const key_type& key) {
         return tree_.exists(key);
     }
 
@@ -345,9 +345,9 @@ public:
 
     //! Tries to locate a key in the B+ tree and returns an constant iterator to
     //! the key/data slot if found. If unsuccessful it returns end().
-    const_iterator find(const key_type& key) const {
+    /*const_iterator find(const key_type& key) const {
         return tree_.find(key);
-    }
+    }*/
 
     //! Tries to locate a key in the B+ tree and returns the number of identical
     //! key entries found. Since this is a unique map, count() returns either 0
