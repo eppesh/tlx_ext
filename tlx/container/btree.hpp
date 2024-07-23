@@ -233,67 +233,95 @@ public:
         unsigned int numreader = 0;
         bool haswriter = false;
         int writerswaiting = 0;
+        int readerswaiting = 0;
 
 #ifdef TLX_BTREE_DEBUG
-        std::unordered_set<std::thread::id> curthreads;
+        std::unordered_set<std::thread::id> curwrite;
+        std::unordered_set<std::thread::id> curread;
 
-        void addtoset() {
+        void addtoread() {
             std::thread::id cur = std::this_thread::get_id();
-            TLX_BTREE_ASSERT(!curthreads.contains(cur));
-            curthreads.insert(cur);
+            TLX_BTREE_ASSERT(!curread.contains(cur));
+            curread.insert(cur);
         }
 
-        void delfromset() {
+        void delfromread() {
             std::thread::id cur = std::this_thread::get_id();
-            TLX_BTREE_ASSERT(curthreads.contains(cur));
-            curthreads.erase(cur);
+            TLX_BTREE_ASSERT(curread.contains(cur));
+            curread.erase(cur);
+        }
+
+        void addtowrite() {
+            std::thread::id cur = std::this_thread::get_id();
+            TLX_BTREE_ASSERT(!curwrite.contains(cur));
+            curwrite.insert(cur);
+        }
+
+        void delfromwrite() {
+            std::thread::id cur = std::this_thread::get_id();
+            TLX_BTREE_ASSERT(curwrite.contains(cur));
+            curwrite.erase(cur);
+        }
+
+        bool readlocked() {
+            return curread.contains(std::this_thread::get_id());
+        }
+
+        bool writelocked() {
+            return curwrite.contains(std::this_thread::get_id());
         }
 #else
-        void addtoset() {}
-        void delfromset() {}
+        void addtoread() {}
+        void delfromread() {}
+        void addtowrite() {}
+        void delfromwrite() {}
 #endif
 
         void readlock() {
             lock_type lock(mutex);
-            addtoset();
+            addtoread();
             if (haswriter) {
+                readerswaiting++;
                 readcv.wait(lock, [this](){return !this->haswriter;});
+                readerswaiting--;
             }
             numreader++;
         }
 
         void upgradelock() {
             lock_type lock(mutex);
-            TLX_BTREE_ASSERT(curthreads.contains(std::this_thread::get_id()));
+            delfromread();
+            addtowrite();
+
             if (numreader > 1 || haswriter) {
                 writerswaiting++;
                 writecv.wait(lock, [this]() {
                     return this->numreader <= 1 && !this->haswriter;
                 });
+                writerswaiting--;
             }
             TLX_BTREE_ASSERT(numreader == 1);
             numreader--;
             haswriter = true;
-            writerswaiting--;
         }
 
         void writelock() {
             lock_type lock(mutex);
-            addtoset();
+            addtowrite();
             if (numreader > 0 || haswriter) {
                 writerswaiting++;
                 writecv.wait(lock, [this](){
                     return this->numreader == 0 && !this->haswriter;
                 });
+                writerswaiting--;
             }
-            writerswaiting--;
             TLX_BTREE_ASSERT(!haswriter);
             haswriter = true;
         }
 
         void read_unlock() {
             lock_type lock(mutex);
-            delfromset();
+            delfromread();
             TLX_BTREE_ASSERT(numreader >= 1);
             numreader--;
             if (numreader == 0)
@@ -302,7 +330,7 @@ public:
 
         void write_unlock() {
             lock_type lock(mutex);
-            delfromset();
+            delfromwrite();
             TLX_BTREE_ASSERT(haswriter);
             haswriter = false;
             if (writerswaiting > 0) {
@@ -310,6 +338,16 @@ public:
             } else {
                 readcv.notify_all();
             }
+        }
+
+        void downgrade_lock() {
+            lock_type lock(mutex);
+            TLX_BTREE_ASSERT(haswriter);
+            addtoread();
+            delfromwrite();
+            haswriter = false;
+            numreader++;
+            readcv.notify_all();
         }
     };
 
@@ -1196,8 +1234,7 @@ private:
     //! Pointer to the B+ tree's root node, either leaf or inner node.
     node* root_;
 
-    // TODO desc
-    LockHelper* rootlock_;
+    // TODO desc TODO move rootlock back
 
     //! Pointer to first leaf in the double linked leaf chain.
     LeafNode* head_leaf_;
@@ -1220,6 +1257,9 @@ private:
 public:
     //! \name Constructors and Destructor
     //! \{
+
+
+    LockHelper* rootlock_;
 
     //! Default constructor initializing an empty B+ tree with the standard key
     //! comparison function.
@@ -2006,13 +2046,21 @@ public:
     //! Attempt to insert a key/data pair into the B+ tree. If the tree does not
     //! allow duplicate keys, then the insert may fail if it is already present.
     std::pair<iterator, bool> insert(const value_type& x) {
-        return insert_start(key_of_value::get(x), x);
+        insert_res res;
+        do {
+            res = insert_start(key_of_value::get(x), x);
+        } while (res.retry);
+        return std::make_pair(res.it, res.inserted);
     }
 
     //! Attempt to insert a key/data pair into the B+ tree. The iterator hint is
     //! currently ignored by the B+ tree insertion routine.
     iterator insert(iterator /* hint */, const value_type& x) {
-        return insert_start(key_of_value::get(x), x).first;
+        insert_res res;
+        do {
+            res = insert_start(key_of_value::get(x), x);
+        } while (res.retry);
+        return res.it;
     }
 
     //! Attempt to insert the range [first,last) of value_type pairs into the B+
@@ -2029,6 +2077,32 @@ public:
     }
 
     //! \}
+private:
+    //! \name Result Types for Insertion Functions
+    //! \{
+
+    // TODO desc
+    struct insert_res {
+        iterator it;
+        bool inserted;
+        bool retry;
+
+        insert_res(iterator i, bool in):
+            it(i), inserted(in), retry(false)
+        {}
+
+        insert_res():
+            it(nullptr, 0), inserted(false), retry(true)
+        {}
+    };
+
+    enum check_split_res {
+        no_split = 0,
+        did_split = 1,
+        retry = 2,
+    };
+
+    //! \}
 
 private:
     //! \name Private Insertion Functions
@@ -2036,13 +2110,18 @@ private:
 
     //! Start the insertion descent at the current root and handle root splits.
     //! Returns true if the item was inserted
-    std::pair<iterator, bool>
+    insert_res
     insert_start(const key_type& key, const value_type& value) {
         //TLX_BTREE_PRINT("insert start");
-        rootlock_->writelock();
+        rootlock_->readlock();
         if (root_ == nullptr)
         {
+            rootlock_->upgradelock();
+            if (root_ != nullptr) return insert_res(end(), false);
+
             root_ = head_leaf_ = tail_leaf_ = allocate_leaf();
+
+            rootlock_->downgrade_lock();
         }
 
         if (root_->is_leafnode())
@@ -2054,8 +2133,12 @@ private:
                 //TLX_BTREE_PRINT("BTree::insert_start: make new root, root is LeafNode");
                 key_type rightkey = key_type();
                 node* rightleaf = nullptr;
+
+                rootlock_->upgradelock();
+                if (!root->is_full()) return insert_res();
+
                 split_leaf_node(root, &rightkey, &rightleaf);
-                rightleaf->lock->readlock();
+                
                 /* deleted: need root to still be the root
                 InnerNode* leftchild = allocate_inner(root_->level + 1);
 
@@ -2066,6 +2149,8 @@ private:
                 root->childid[0] = leftchild;
                 root->childid[1] = rightleaf;
                 root->slotuse = 1;*/
+
+                rightleaf->lock->readlock();
 
                 InnerNode* newroot = allocate_inner(root_->level + 1);
                 newroot->lock->writelock();
@@ -2078,7 +2163,8 @@ private:
                 newroot->slotuse = 1;
 
                 root_ = newroot;
-                newroot->lock->write_unlock();
+                newroot->lock->write_unlock(); // we still have root_lock_ locked
+                rootlock_->downgrade_lock();
             }
         }
         else
@@ -2088,6 +2174,9 @@ private:
                 //TLX_BTREE_PRINT("BTree::insert_start: make new root, root is InnerNode");
                 key_type rightkey = key_type();
                 node* rightleaf = nullptr;
+
+                rootlock_->upgradelock();
+                if (!root->is_full()) return insert_res();
 
                 split_inner_node(root, &rightkey, &rightleaf);
                 rightleaf->lock->readlock();
@@ -2104,15 +2193,18 @@ private:
 
                 root_ = newroot;
                 newroot->lock->write_unlock();
+                rootlock_->downgrade_lock();
             }
         }
 
         // TODO unlock root in insert_descend?
-        std::pair<iterator, bool> r =
+        insert_res r =
             insert_descend(root_, key, value);
 
+        if (r.retry) return r;
+
         // increment size if the item was inserted
-        if (r.second) ++stats_.size;
+        if (r.inserted) ++stats_.size;
 
 #ifdef TLX_BTREE_DEBUG
         if (debug) print(std::cout);
@@ -2133,23 +2225,30 @@ private:
      * slot. If the node overflows, then it must be split and the new split node
      * inserted into the parent. Unroll / this splitting up to the root.
     */
-    std::pair<iterator, bool> insert_descend(
-        node* n, /*node* parent,*/ const key_type& key, const value_type& value) {
+    insert_res insert_descend(
+        node* n, const key_type& key, const value_type& value) {
+        
+        TLX_BTREE_ASSERT(n->lock->readlocked());
         
         if (!n->is_leafnode())
         {
             InnerNode* inner = static_cast<InnerNode*>(n);
             unsigned short slot = find_lower(inner, key);
 
-            bool split = check_split_child(inner, inner->childid[slot], slot);
+            inner->childid[slot]->lock->readlock();
+            check_split_res res = check_split_child(inner, inner->childid[slot], slot);
+            if (res == retry) return insert_res();
             
             // if the key ended up moving
-            if (split && key_less(inner->key(slot), key)) slot++;
+            if (res == did_split && key_less(inner->key(slot), key)) slot++;
 
             //TLX_BTREE_PRINT(
                 //"BTree::insert_descend into " << inner->childid[slot]);
 
-            std::pair<iterator, bool> r =
+            n->lock->read_unlock();
+            if (n == root_) rootlock_->read_unlock();
+
+            insert_res r =
                 insert_descend(inner->childid[slot],
                                key, value);
 
@@ -2163,7 +2262,7 @@ private:
 
             if (!allow_duplicates &&
                 slot < leaf->slotuse && key_equal(key, leaf->key(slot))) {
-                return std::pair<iterator, bool>(iterator(leaf, slot), false);
+                return insert_res(iterator(leaf, slot), false);
             }
 
             // move items and put data item into correct data slot
@@ -2171,26 +2270,40 @@ private:
             // leaf will not overflow
             TLX_BTREE_ASSERT(leaf->slotuse + 1 <= leaf_slotmax);
 
+            leaf->lock->upgradelock();
+            if (slot < 0 || slot > leaf->slotuse) return insert_res();
+
             std::copy_backward(
                 leaf->slotdata + slot, leaf->slotdata + leaf->slotuse,
                 leaf->slotdata + leaf->slotuse + 1);
 
             leaf->slotdata[slot] = value;
             leaf->slotuse++;
-            return std::pair<iterator, bool>(iterator(leaf, slot), true);
+
+            insert_res ret_val = insert_res(iterator(leaf, slot), true);
+            leaf->lock->write_unlock();
+            return ret_val;
         }
     }
 
     //! Check if the node's child need to be split,
     //! in which case it splits it. Returns whether or now the child was split
-    bool check_split_child(InnerNode* parent, node* c, unsigned short slot) {
+    check_split_res check_split_child(InnerNode* parent, node* c, unsigned short slot) {
         TLX_BTREE_ASSERT(parent->childid[slot] == c);
+        TLX_BTREE_ASSERT(parent->lock->readlocked());
+        TLX_BTREE_ASSERT(c->lock->readlocked());
 
         if (c->is_leafnode())
         {
             LeafNode* child = static_cast<LeafNode*>(c);
             if (child->is_full())
             {
+                parent->lock->upgradelock();
+                child->lock->upgradelock();
+
+                if (parent->childid[slot] != child) return retry;
+                if (!child->is_full()) return retry;
+
                 key_type newkey = key_type();
                 node* newleaf = nullptr;
 
@@ -2205,13 +2318,22 @@ private:
                 parent->slotkey[slot] = newkey;
                 parent->childid[slot + 1] = newleaf;
                 parent->slotuse++;
-                return true;
+
+                parent->lock->downgrade_lock();
+                child->lock->downgrade_lock();
+                return did_split;
             }
         }
         else
         {
             InnerNode* child = static_cast<InnerNode*>(c);
             if (child->is_full()) {
+                parent->lock->upgradelock();
+                child->lock->upgradelock();
+
+                if (parent->childid[slot] != child) return retry;
+                if (!child->is_full()) return retry;
+
                 key_type newkey = key_type();
                 node* newnode = nullptr;
 
@@ -2226,18 +2348,23 @@ private:
                 parent->slotkey[slot] = newkey;
                 parent->childid[slot + 1] = newnode;
                 parent->slotuse++;
-                return true;
+
+                parent->lock->downgrade_lock();
+                child->lock->downgrade_lock();
+                newnode->lock->downgrade_lock();
+                return did_split;
             }
         }
-        return false;
+        return no_split;
     }
 
     //! Split up a leaf node into two equally-filled sibling leaves. Returns the
     //! new nodes and its insertion key in the two parameters.
     void split_leaf_node(LeafNode* leaf,
                          key_type* out_newkey, node** out_newleaf) {
-        // TODO assuming leaf is already locked?
+
         TLX_BTREE_ASSERT(leaf->is_full());
+        TLX_BTREE_ASSERT(leaf->lock->writelocked());
 
         unsigned short mid = (leaf->slotuse >> 1);
 
@@ -2266,7 +2393,6 @@ private:
 
         *out_newkey = leaf->key(leaf->slotuse - 1);
         *out_newleaf = newleaf;
-        newleaf->lock->write_unlock();
     }
 
     //! Split up an inner node into two equally-filled sibling nodes. Returns
@@ -2274,6 +2400,7 @@ private:
     void split_inner_node(InnerNode* inner, key_type* out_newkey,
                           node** out_newinner) {
         TLX_BTREE_ASSERT(inner->is_full());
+        TLX_BTREE_ASSERT(inner->lock->writelocked());
 
         unsigned short mid = (inner->slotuse >> 1);
 
@@ -2284,6 +2411,7 @@ private:
                         //inner->slotuse - (mid + 1) << " sized");
 
         InnerNode* newinner = allocate_inner(inner->level);
+        newinner->lock->writelocked();
 
         newinner->slotuse = inner->slotuse - (mid + 1);
 
