@@ -28,6 +28,7 @@
 #include <thread>
 #include <mutex>
 #include <condition_variable>
+#include <atomic>
 
 namespace tlx {
 
@@ -390,7 +391,6 @@ private:
         }
 
         node() {
-            slotuse = 0;
             lock = new LockHelper();
         }
 
@@ -1249,7 +1249,7 @@ private:
     //! \{
 
     //! Pointer to the B+ tree's root node, either leaf or inner node.
-    node* root_;
+    std::atomic<node*> root_;
 
     //! Pointer to first leaf in the double linked leaf chain.
     LeafNode* head_leaf_;
@@ -1276,21 +1276,17 @@ public:
     //! Default constructor initializing an empty B+ tree with the standard key
     //! comparison function.
     explicit BTree(const allocator_type& alloc = allocator_type())
-        : head_leaf_(nullptr), tail_leaf_(nullptr),
+        : root_(nullptr), head_leaf_(nullptr), tail_leaf_(nullptr),
           allocator_(alloc)
-    {
-        root_ = allocate_leaf();
-    }
+    { }
 
     //! Constructor initializing an empty B+ tree with a special key
     //! comparison object.
     explicit BTree(const key_compare& kcf,
                    const allocator_type& alloc = allocator_type())
-        : head_leaf_(nullptr), tail_leaf_(nullptr),
+        : root_(nullptr), head_leaf_(nullptr), tail_leaf_(nullptr),
           key_less_(kcf), allocator_(alloc)
-    {
-        root_ = allocate_leaf();
-    }
+    { }
 
     //! Constructor initializing a B+ tree with the range [first,last). The
     //! range need not be sorted. To create a B+ tree from a sorted range, use
@@ -1298,9 +1294,8 @@ public:
     template <class InputIterator>
     BTree(InputIterator first, InputIterator last,
           const allocator_type& alloc = allocator_type())
-        : head_leaf_(nullptr), tail_leaf_(nullptr),
+        : root_(nullptr), head_leaf_(nullptr), tail_leaf_(nullptr),
           allocator_(alloc) {
-        root_ = allocate_leaf();
         insert(first, last);
     }
 
@@ -1310,9 +1305,8 @@ public:
     template <class InputIterator>
     BTree(InputIterator first, InputIterator last, const key_compare& kcf,
           const allocator_type& alloc = allocator_type())
-        : head_leaf_(nullptr), tail_leaf_(nullptr),
+        : root_(nullptr), head_leaf_(nullptr), tail_leaf_(nullptr),
           key_less_(kcf), allocator_(alloc) {
-        root_ = allocate_leaf();
         insert(first, last);
     }
 
@@ -1473,20 +1467,18 @@ public:
 
     //! Frees all key/data pairs and all nodes of the tree.
     void clear() {
-        root_->lock->writelock();
-        if (root_->slotuse != 0)
+        if (root_)
         {
             clear_recursive(root_);
             free_node(root_);
 
-            root_->slotuse = 0;
+            root_ = nullptr;
             head_leaf_ = tail_leaf_ = nullptr;
 
-            stats_.clear();
+            // TODO stats_ = tree_stats();
         }
 
         TLX_BTREE_ASSERT(stats_.size == 0);
-        root_->lock->write_unlock();
     }
 
 private:
@@ -1704,52 +1696,33 @@ public:
     //! Non-STL function checking whether a key is in the B+ tree. The same as
     //! (find(k) != end()) or (count() != 0).
     bool exists(const key_type& key) const {
-        root_->lock->readlock();
         const node* n = root_;
-        if (n->slotuse == 0) {
-            root_->lock->read_unlock();
-            return false;
-        }
-        n->lock->readlock();
+        if (!n) return false;
 
         while (!n->is_leafnode())
         {
             const InnerNode* inner = static_cast<const InnerNode*>(n);
             unsigned short slot = find_lower(inner, key);
 
-            inner->childid[slot]->lock->readlock();
-            inner->lock->read_unlock();
             n = inner->childid[slot];
         }
-
 
         const LeafNode* leaf = static_cast<const LeafNode*>(n);
 
         unsigned short slot = find_lower(leaf, key);
-        auto res = (slot < leaf->slotuse && key_equal(key, leaf->key(slot)));
-        leaf->lock->read_unlock();
-        return res;
+        return (slot < leaf->slotuse && key_equal(key, leaf->key(slot)));
     }
 
     //! Tries to locate a key in the B+ tree and returns an iterator to the
     //! key/data slot if found. If unsuccessful it returns end().
     iterator find(const key_type& key) {
-        root_->lock->readlock();
-
         node* n = root_;
-        if (n->slotuse == 0) {
-            root_->lock->read_unlock();
-            return end();
-        }
-        n->lock->readlock();
+        if (!n) return end();
 
         while (!n->is_leafnode())
         {
             const InnerNode* inner = static_cast<const InnerNode*>(n);
             unsigned short slot = find_lower(inner, key);
-
-            inner->childid[slot]->lock->readlock();
-            inner->lock->read_unlock();
 
             n = inner->childid[slot];
         }
@@ -1757,51 +1730,36 @@ public:
         LeafNode* leaf = static_cast<LeafNode*>(n);
 
         unsigned short slot = find_lower(leaf, key);
-        
-        auto res = (slot < leaf->slotuse && key_equal(key, leaf->key(slot)))
+        return (slot < leaf->slotuse && key_equal(key, leaf->key(slot)))
                ? iterator(leaf, slot) : end();
-        leaf->lock->read_unlock();
-        return res;
     }
 
     //! Tries to locate a key in the B+ tree and returns an constant iterator to
     //! the key/data slot if found. If unsuccessful it returns end().
     const_iterator find(const key_type& key) const {
-        root_->lock->readlock();
-        node* n = root_;
-        if (n->slotuse == 0) {
-            root_->lock->read_unlock();
-            return end();
-        }
-        n->lock->readlock();
+        const node* n = root_;
+        if (!n) return end();
 
         while (!n->is_leafnode())
         {
             const InnerNode* inner = static_cast<const InnerNode*>(n);
             unsigned short slot = find_lower(inner, key);
 
-            inner->childid[slot]->lock->readlock();
-            inner->lock->read_unlock();
             n = inner->childid[slot];
         }
 
         const LeafNode* leaf = static_cast<const LeafNode*>(n);
 
         unsigned short slot = find_lower(leaf, key);
-        
-        auto res = (slot < leaf->slotuse && key_equal(key, leaf->key(slot)))
+        return (slot < leaf->slotuse && key_equal(key, leaf->key(slot)))
                ? const_iterator(leaf, slot) : end();
-        leaf->lock->read_unlock();
-        return res;
     }
 
     //! Tries to locate a key in the B+ tree and returns the number of identical
     //! key entries found.
     size_type count(const key_type& key) const {
-        if (!allow_duplicates) return exists(key) ? 1 : 0;
-
         const node* n = root_;
-        if (n->slotuse == 0) return 0;
+        if (!n) return 0;
 
         while (!n->is_leafnode())
         {
@@ -1834,7 +1792,7 @@ public:
     // TODO lb and ub not very important
     iterator lower_bound(const key_type& key) {
         node* n = root_;
-        if (n->slotuse == 0) return end();
+        if (!n) return end();
 
         while (!n->is_leafnode())
         {
@@ -1854,7 +1812,7 @@ public:
     //! equal to or greater than key, or end() if all keys are smaller.
     const_iterator lower_bound(const key_type& key) const {
         const node* n = root_;
-        if (n->slotuse == 0) return end();
+        if (!n) return end();
 
         while (!n->is_leafnode())
         {
@@ -1874,7 +1832,7 @@ public:
     //! than key, or end() if all keys are smaller or equal.
     iterator upper_bound(const key_type& key) {
         node* n = root_;
-        if (n->slotuse == 0) return end();
+        if (!n) return end();
 
         while (!n->is_leafnode())
         {
@@ -1894,7 +1852,7 @@ public:
     //! greater than key, or end() if all keys are smaller or equal.
     const_iterator upper_bound(const key_type& key) const {
         const node* n = root_;
-        if (n->slotuse == 0) return end();
+        if (!n) return end();
 
         while (!n->is_leafnode())
         {
@@ -1997,7 +1955,7 @@ public: // TODO skipping these two sections
     //! Copy constructor. The newly initialized B+ tree object will contain a
     //! copy of all key/data pairs.
     BTree(const BTree& other)
-        : head_leaf_(nullptr), tail_leaf_(nullptr),
+        : root_(nullptr), head_leaf_(nullptr), tail_leaf_(nullptr),
           // TODO stats_(other.stats_),
           key_less_(other.key_comp()),
           allocator_(other.get_allocator()) {
@@ -2131,15 +2089,23 @@ private:
     insert_res
     insert_start(const key_type& key, const value_type& value) {
         //TLX_BTREE_PRINT("insert start");
-        root_->lock->readlock();
-        if (root_->slotuse == 0)
+        if (!root_)
         {
-            root_->lock->upgradelock();
-            if (root_->slotuse > 0) return insert_res();
+            LeafNode* newroot = allocate_leaf();
+            newroot->lock->writelock(); // ask baba TODO
 
-            head_leaf_ = tail_leaf_ = root_;
+            node* expected = nullptr;
+            bool wonrace = root_.compare_exchange_strong(expected, newroot);
 
-            root_->lock->downgrade_lock();
+            if (!wonrace) {
+                free_node(newroot);
+                return insert_res();
+            } else {
+                head_leaf_ = tail_leaf_ = static_cast<LeafNode*>(root_.load());
+                newroot->lock->downgrade_lock();
+            }
+        } else {
+            root_.load()->lock->readlock();
         }
 
         if (root_->is_leafnode())
@@ -2682,7 +2648,7 @@ public:
 
         if (self_verify) verify();
 
-        if (root_->slotuse == 0) return false;
+        if (!root_) return false;
 
         if (!root_->is_leafnode())
         {
@@ -2730,7 +2696,7 @@ public:
 
         if (stats_.size == 0) {
             free_node(root_);
-            root_->slotuse = 0;
+            root_ = nullptr;
         }
 
 #ifdef TLX_BTREE_DEBUG
@@ -2762,7 +2728,7 @@ public:
 
         if (self_verify) verify();
 
-        if (root_->slotuse == 0) return;
+        if (!root_) return;
 
         bool successful;
         if (!allow_duplicates) {
@@ -3746,7 +3712,7 @@ public:
     //! function requires that the header is compiled with TLX_BTREE_DEBUG and
     //! that key_type is printable via std::ostream.
     void print(std::ostream& os) const {
-        if (root_->slotuse != 0) {
+        if (root_) {
             print_node(os, root_, 0, true);
         }
     }
@@ -3831,7 +3797,7 @@ public:
         key_type minkey, maxkey;
         tree_stats vstats;
 
-        if (root_->slotuse != 0)
+        if (root_)
         {
             verify_node(root_, &minkey, &maxkey, vstats);
 
@@ -3851,8 +3817,6 @@ private:
 
         if (n->is_leafnode())
         {
-            if (n->slotuse == 0 && n == root_) return;
-
             const LeafNode* leaf = static_cast<const LeafNode*>(n);
 
             tlx_die_unless(leaf == root_ || leaf->slotuse >= leaf_slotmin - 1);
