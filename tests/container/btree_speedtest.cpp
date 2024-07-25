@@ -38,6 +38,9 @@ const size_t max_items = 1024000 * 64;
 //! random seed
 const int seed = 34234235;
 
+//! whether or not to use multiset/multimap
+const bool use_multi = false;
+
 //! Traits used for the speed tests, BTREE_DEBUG is not defined.
 template <int InnerSlots, int LeafSlots>
 struct btree_traits_speed : tlx::btree_default_traits<size_t, size_t> {
@@ -64,10 +67,25 @@ public:
     void run(size_t items) {
         SetType set;
 
-        std::default_random_engine rng(seed);
-        for (size_t i = 0; i < items; i++)
-            set.insert(rng());
+        if (use_multi) 
+        {
+            std::default_random_engine rng(seed);
+            for (size_t i = 0; i < items; i++)
+                set.insert(rng());
+        }
+        else 
+        {
+            std::mt19937 gen(seed);
 
+            std::vector<int> v(items);
+            std::iota(v.begin(), v.end(), 0);
+            std::ranges::shuffle(v, gen);
+
+            for (auto num : v) {
+                set.insert(num);
+            }
+        }
+        
         die_unless(set.size() == items);
     }
 };
