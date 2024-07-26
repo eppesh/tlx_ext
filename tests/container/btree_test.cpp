@@ -36,7 +36,7 @@ static const bool tlx_more_tests = false;
 #endif
 
 static const bool test_multi = false;
-static const auto seed = 97780705; //TODO std::random_device{}();
+static const auto seed = std::random_device{}();
 
 /******************************************************************************/
 // Instantiation Tests
@@ -122,10 +122,6 @@ struct SimpleTest {
             // random insert
             std::ranges::shuffle(v, gen);
             for (auto num : v) {
-                if (!btree.insert(num).second) {
-                    assert(false);
-                    // TODO delete
-                }
                 die_unless(btree.insert(num).second);
                 die_unless(btree.size() == ++size);
             }

@@ -242,7 +242,7 @@ public:
 
         void addtoread() {
             std::thread::id cur = std::this_thread::get_id();
-            if (!(!curread.contains(cur))) {
+            if (curread.contains(cur)) {
                 assert(false);
                 // TODO delete
             }
@@ -1231,6 +1231,12 @@ public:
             inner_nodes = 0;
         }
 
+        void copy(const tree_stats& other) {
+            size = other.size.load();
+            leaves = other.leaves.load();
+            inner_nodes = other.inner_nodes.load();
+        }
+
         //! Return the total number of nodes
         size_type nodes() const {
             return inner_nodes + leaves;
@@ -1475,7 +1481,8 @@ public:
             root_ = nullptr;
             head_leaf_ = tail_leaf_ = nullptr;
 
-            // TODO stats_ = tree_stats();
+            // stats_ = tree_stats();
+            stats_.clear();
         }
 
         TLX_BTREE_ASSERT(stats_.size == 0);
@@ -1945,6 +1952,7 @@ public: // TODO skipping these two sections
                     root_ = copy_recursive(other.root_.load());
                 }
                 // TODO stats_ = other.stats_;
+                stats_.copy(other.stats_);
             }
 
             if (self_verify) verify();
@@ -1956,9 +1964,10 @@ public: // TODO skipping these two sections
     //! copy of all key/data pairs.
     BTree(const BTree& other)
         : root_(nullptr), head_leaf_(nullptr), tail_leaf_(nullptr),
-          // TODO stats_(other.stats_),
           key_less_(other.key_comp()),
           allocator_(other.get_allocator()) {
+        
+        stats_.copy(other.stats_);
         if (size() > 0)
         {
             stats_.leaves = stats_.inner_nodes = 0;
@@ -2023,7 +2032,9 @@ public:
     //! allow duplicate keys, then the insert may fail if it is already present.
     std::pair<iterator, bool> insert(const value_type& x) {
         insert_res res;
+        int tries __attribute__((unused)) = 0; // TODO delete
         do {
+            tries++;
             res = insert_start(key_of_value::get(x), x);
         } while (res.retry);
         return std::make_pair(res.it, res.inserted);
@@ -2134,8 +2145,6 @@ private:
                 root->childid[1] = rightleaf;
                 root->slotuse = 1;*/
 
-                rightleaf->lock->readlock();
-
                 InnerNode* newroot = allocate_inner(root_.load()->level + 1);
                 newroot->lock->writelock();
                 newroot->slotkey[0] = rightkey;
@@ -2146,9 +2155,10 @@ private:
 
                 newroot->slotuse = 1;
 
+                newroot->lock->downgrade_lock();
                 root_ = newroot;
-                newroot->lock->write_unlock();
-                root_.load()->lock->downgrade_lock();
+
+                newroot->childid[0]->lock->write_unlock(); // unlock former root
             }
         }
         else
@@ -2163,7 +2173,6 @@ private:
                 if (!root->is_full()) return insert_res();
 
                 split_inner_node(root, &rightkey, &rightleaf);
-                rightleaf->lock->readlock();
 
                 InnerNode* newroot = allocate_inner(root_.load()->level + 1);
                 newroot->lock->writelock();
@@ -2174,10 +2183,11 @@ private:
                 rightleaf->lock->read_unlock();
 
                 newroot->slotuse = 1;
-
+                
+                newroot->lock->downgrade_lock();
                 root_ = newroot;
-                newroot->lock->write_unlock();
-                root_.load()->lock->downgrade_lock();
+
+                newroot->childid[0]->lock->write_unlock(); // unlock former root
             }
         }
         
@@ -2211,6 +2221,9 @@ private:
     insert_res insert_descend(
         node* n, const key_type& key, const value_type& value) {
         
+        if (!n->lock->readlocked()) {
+            assert(false); // TODO delete
+        }
         TLX_BTREE_ASSERT(n->lock->readlocked());
         
         if (!n->is_leafnode())
@@ -2252,6 +2265,8 @@ private:
 
             if (!allow_duplicates &&
                 slot < leaf->slotuse && key_equal(key, leaf->key(slot))) {
+                
+                leaf->lock->read_unlock();
                 return insert_res(iterator(leaf, slot), false);
             }
 
@@ -2299,7 +2314,6 @@ private:
                 node* newleaf = nullptr;
 
                 split_leaf_node(child, &newkey, &newleaf);
-                newleaf->lock->readlock();
 
                 std::copy_backward(
                     parent->slotkey + slot, parent->slotkey + parent->slotuse,
@@ -2331,7 +2345,6 @@ private:
                 node* newnode = nullptr;
 
                 split_inner_node(child, &newkey, &newnode);
-                newnode->lock->readlock();
 
                 std::copy_backward(
                     parent->slotkey + slot, parent->slotkey + parent->slotuse,
@@ -2385,6 +2398,7 @@ private:
         leaf->next_leaf = newleaf;
         newleaf->prev_leaf = leaf;
 
+        newleaf->lock->downgrade_lock();
         *out_newkey = leaf->key(leaf->slotuse - 1);
         *out_newleaf = newleaf;
     }
@@ -2405,7 +2419,7 @@ private:
                         //inner->slotuse - (mid + 1) << " sized");
 
         InnerNode* newinner = allocate_inner(inner->level);
-        newinner->lock->writelocked();
+        newinner->lock->writelock();
 
         newinner->slotuse = inner->slotuse - (mid + 1);
 
@@ -2416,6 +2430,7 @@ private:
 
         inner->slotuse = mid;
 
+        newinner->lock->downgrade_lock();
         *out_newkey = inner->key(mid);
         *out_newinner = newinner;
     }
@@ -3801,6 +3816,9 @@ public:
         {
             verify_node(root_.load(), &minkey, &maxkey, vstats);
 
+            if (vstats.size != stats_.size) {
+                assert(false); // TODO delete
+            }
             tlx_die_unless(vstats.size == stats_.size);
             tlx_die_unless(vstats.leaves == stats_.leaves);
             tlx_die_unless(vstats.inner_nodes == stats_.inner_nodes);
@@ -3821,6 +3839,11 @@ private:
 
             tlx_die_unless(leaf == root_.load() || leaf->slotuse >= leaf_slotmin - 1);
             tlx_die_unless(leaf->slotuse > 0);
+            if (leaf->lock->readlocked()) {
+                assert(false); // TODO delete
+            }
+            tlx_die_unless(!leaf->lock->readlocked()); // TODO these two lines won't work in erase verifying
+            tlx_die_unless(!leaf->lock->writelocked());
 
             for (unsigned short slot = 0; slot < leaf->slotuse - 1; ++slot)
             {
