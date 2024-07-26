@@ -1467,10 +1467,10 @@ public:
 
     //! Frees all key/data pairs and all nodes of the tree.
     void clear() {
-        if (root_)
+        if (root_.load())
         {
-            clear_recursive(root_);
-            free_node(root_);
+            clear_recursive(root_.load());
+            free_node(root_.load());
 
             root_ = nullptr;
             head_leaf_ = tail_leaf_ = nullptr;
@@ -1696,7 +1696,7 @@ public:
     //! Non-STL function checking whether a key is in the B+ tree. The same as
     //! (find(k) != end()) or (count() != 0).
     bool exists(const key_type& key) const {
-        const node* n = root_;
+        const node* n = root_.load();
         if (!n) return false;
 
         while (!n->is_leafnode())
@@ -1716,7 +1716,7 @@ public:
     //! Tries to locate a key in the B+ tree and returns an iterator to the
     //! key/data slot if found. If unsuccessful it returns end().
     iterator find(const key_type& key) {
-        node* n = root_;
+        node* n = root_.load();
         if (!n) return end();
 
         while (!n->is_leafnode())
@@ -1737,7 +1737,7 @@ public:
     //! Tries to locate a key in the B+ tree and returns an constant iterator to
     //! the key/data slot if found. If unsuccessful it returns end().
     const_iterator find(const key_type& key) const {
-        const node* n = root_;
+        const node* n = root_.load();
         if (!n) return end();
 
         while (!n->is_leafnode())
@@ -1758,7 +1758,7 @@ public:
     //! Tries to locate a key in the B+ tree and returns the number of identical
     //! key entries found.
     size_type count(const key_type& key) const {
-        const node* n = root_;
+        const node* n = root_.load();
         if (!n) return 0;
 
         while (!n->is_leafnode())
@@ -1791,7 +1791,7 @@ public:
     //! or greater than key, or end() if all keys are smaller.
     // TODO lb and ub not very important
     iterator lower_bound(const key_type& key) {
-        node* n = root_;
+        node* n = root_.load();
         if (!n) return end();
 
         while (!n->is_leafnode())
@@ -1811,7 +1811,7 @@ public:
     //! Searches the B+ tree and returns a constant iterator to the first pair
     //! equal to or greater than key, or end() if all keys are smaller.
     const_iterator lower_bound(const key_type& key) const {
-        const node* n = root_;
+        const node* n = root_.load();
         if (!n) return end();
 
         while (!n->is_leafnode())
@@ -1831,7 +1831,7 @@ public:
     //! Searches the B+ tree and returns an iterator to the first pair greater
     //! than key, or end() if all keys are smaller or equal.
     iterator upper_bound(const key_type& key) {
-        node* n = root_;
+        node* n = root_.load();
         if (!n) return end();
 
         while (!n->is_leafnode())
@@ -1851,7 +1851,7 @@ public:
     //! Searches the B+ tree and returns a constant iterator to the first pair
     //! greater than key, or end() if all keys are smaller or equal.
     const_iterator upper_bound(const key_type& key) const {
-        const node* n = root_;
+        const node* n = root_.load();
         if (!n) return end();
 
         while (!n->is_leafnode())
@@ -1941,8 +1941,8 @@ public: // TODO skipping these two sections
             if (other.size() != 0)
             {
                 stats_.leaves = stats_.inner_nodes = 0;
-                if (other.root_) {
-                    root_ = copy_recursive(other.root_);
+                if (other.root_.load()) {
+                    root_ = copy_recursive(other.root_.load());
                 }
                 // TODO stats_ = other.stats_;
             }
@@ -1962,8 +1962,8 @@ public: // TODO skipping these two sections
         if (size() > 0)
         {
             stats_.leaves = stats_.inner_nodes = 0;
-            if (other.root_) {
-                root_ = copy_recursive(other.root_);
+            if (other.root_.load()) {
+                root_ = copy_recursive(other.root_.load());
             }
             if (self_verify) verify();
         }
@@ -2089,7 +2089,7 @@ private:
     insert_res
     insert_start(const key_type& key, const value_type& value) {
         //TLX_BTREE_PRINT("insert start");
-        if (!root_)
+        if (!root_.load())
         {
             LeafNode* newroot = allocate_leaf();
             newroot->lock->writelock(); // ask baba TODO
@@ -2108,23 +2108,23 @@ private:
             root_.load()->lock->readlock();
         }
 
-        if (root_->is_leafnode())
+        if (root_.load()->is_leafnode())
         {
             // case where the root is the only node and needs to be checked
-            LeafNode* root = static_cast<LeafNode*>(root_);
+            LeafNode* root = static_cast<LeafNode*>(root_.load());
             if (root->is_full())
             {
                 //TLX_BTREE_PRINT("BTree::insert_start: make new root, root is LeafNode");
                 key_type rightkey = key_type();
                 node* rightleaf = nullptr;
 
-                root_->lock->upgradelock();
+                root_.load()->lock->upgradelock();
                 if (!root->is_full()) return insert_res();
 
                 split_leaf_node(root, &rightkey, &rightleaf);
                 
                 /* deleted: need root to still be the root
-                InnerNode* leftchild = allocate_inner(root_->level + 1);
+                InnerNode* leftchild = allocate_inner(root_.load()->level + 1);
 
                 std::copy(root->slotdata, root->slotdata + root->slotuse,
                           leftchild->slotdata);
@@ -2136,11 +2136,11 @@ private:
 
                 rightleaf->lock->readlock();
 
-                InnerNode* newroot = allocate_inner(root_->level + 1);
+                InnerNode* newroot = allocate_inner(root_.load()->level + 1);
                 newroot->lock->writelock();
                 newroot->slotkey[0] = rightkey;
 
-                newroot->childid[0] = root_;
+                newroot->childid[0] = root_.load();
                 newroot->childid[1] = rightleaf;
                 rightleaf->lock->read_unlock();
 
@@ -2148,28 +2148,28 @@ private:
 
                 root_ = newroot;
                 newroot->lock->write_unlock();
-                root_->lock->downgrade_lock();
+                root_.load()->lock->downgrade_lock();
             }
         }
         else
         {
-            InnerNode* root = static_cast<InnerNode*>(root_);
+            InnerNode* root = static_cast<InnerNode*>(root_.load());
             if (root->is_full()) {
                 //TLX_BTREE_PRINT("BTree::insert_start: make new root, root is InnerNode");
                 key_type rightkey = key_type();
                 node* rightleaf = nullptr;
 
-                root_->lock->upgradelock();
+                root_.load()->lock->upgradelock();
                 if (!root->is_full()) return insert_res();
 
                 split_inner_node(root, &rightkey, &rightleaf);
                 rightleaf->lock->readlock();
 
-                InnerNode* newroot = allocate_inner(root_->level + 1);
+                InnerNode* newroot = allocate_inner(root_.load()->level + 1);
                 newroot->lock->writelock();
                 newroot->slotkey[0] = rightkey;
 
-                newroot->childid[0] = root_;
+                newroot->childid[0] = root_.load();
                 newroot->childid[1] = rightleaf;
                 rightleaf->lock->read_unlock();
 
@@ -2177,12 +2177,12 @@ private:
 
                 root_ = newroot;
                 newroot->lock->write_unlock();
-                root_->lock->downgrade_lock();
+                root_.load()->lock->downgrade_lock();
             }
         }
         
         insert_res r =
-            insert_descend(root_, key, value);
+            insert_descend(root_.load(), key, value);
 
         if (r.retry) return r;
 
@@ -2648,13 +2648,13 @@ public:
 
         if (self_verify) verify();
 
-        if (!root_) return false;
+        if (!root_.load()) return false;
 
-        if (!root_->is_leafnode())
+        if (!root_.load()->is_leafnode())
         {
-            if (root_->slotuse <= 1)
+            if (root_.load()->slotuse <= 1)
             {
-                InnerNode* root = static_cast<InnerNode*>(root_);
+                InnerNode* root = static_cast<InnerNode*>(root_.load());
                 TLX_BTREE_ASSERT(root->slotuse == 1);
                 if (root->level == 1)
                 {
@@ -2689,13 +2689,13 @@ public:
         if (self_verify) verify();
 
         result_t result = erase_one_descend(
-            key, root_);
+            key, root_.load());
 
         if (!result.has(btree_not_found))
             --stats_.size;
 
         if (stats_.size == 0) {
-            free_node(root_);
+            free_node(root_.load());
             root_ = nullptr;
         }
 
@@ -2728,14 +2728,14 @@ public:
 
         if (self_verify) verify();
 
-        if (!root_) return;
+        if (!root_.load()) return;
 
         bool successful;
         if (!allow_duplicates) {
             successful = erase_one(iter.key());
         } else {
             result_t result = erase_iter_descend(
-                iter, root_, nullptr, nullptr, nullptr, nullptr, nullptr, 0);
+                iter, root_.load(), nullptr, nullptr, nullptr, nullptr, nullptr, 0);
             successful = !result.has(btree_not_found);
         }
 
@@ -3089,12 +3089,12 @@ private:
                     }
                     else
                     {
-                        TLX_BTREE_ASSERT(leaf == root_);
+                        TLX_BTREE_ASSERT(leaf == root_.load());
                     }
                 }
             }
 
-            if (leaf->is_underflow() && !(leaf == root_ && leaf->slotuse >= 1))
+            if (leaf->is_underflow() && !(leaf == root_.load() && leaf->slotuse >= 1))
             {
                 // determine what to do about the underflow
 
@@ -3102,10 +3102,10 @@ private:
                 // and set root to nullptr.
                 if (left_leaf == nullptr && right_leaf == nullptr)
                 {
-                    TLX_BTREE_ASSERT(leaf == root_);
+                    TLX_BTREE_ASSERT(leaf == root_.load());
                     TLX_BTREE_ASSERT(leaf->slotuse == 0);
 
-                    free_node(root_);
+                    free_node(root_.load());
 
                     root_ = leaf = nullptr;
                     head_leaf_ = tail_leaf_ = nullptr;
@@ -3298,13 +3298,13 @@ private:
             }
 
             if (inner->is_underflow() &&
-                !(inner == root_ && inner->slotuse >= 1))
+                !(inner == root_.load() && inner->slotuse >= 1))
             {
                 // case: the inner node is the root and has just one
                 // child. that child becomes the new root
                 if (left_inner == nullptr && right_inner == nullptr)
                 {
-                    TLX_BTREE_ASSERT(inner == root_);
+                    TLX_BTREE_ASSERT(inner == root_.load());
                     TLX_BTREE_ASSERT(inner->slotuse == 0);
 
                     root_ = inner->childid[0];
@@ -3712,8 +3712,8 @@ public:
     //! function requires that the header is compiled with TLX_BTREE_DEBUG and
     //! that key_type is printable via std::ostream.
     void print(std::ostream& os) const {
-        if (root_) {
-            print_node(os, root_, 0, true);
+        if (root_.load()) {
+            print_node(os, root_.load(), 0, true);
         }
     }
 
@@ -3797,9 +3797,9 @@ public:
         key_type minkey, maxkey;
         tree_stats vstats;
 
-        if (root_)
+        if (root_.load())
         {
-            verify_node(root_, &minkey, &maxkey, vstats);
+            verify_node(root_.load(), &minkey, &maxkey, vstats);
 
             tlx_die_unless(vstats.size == stats_.size);
             tlx_die_unless(vstats.leaves == stats_.leaves);
@@ -3819,7 +3819,7 @@ private:
         {
             const LeafNode* leaf = static_cast<const LeafNode*>(n);
 
-            tlx_die_unless(leaf == root_ || leaf->slotuse >= leaf_slotmin - 1);
+            tlx_die_unless(leaf == root_.load() || leaf->slotuse >= leaf_slotmin - 1);
             tlx_die_unless(leaf->slotuse > 0);
 
             for (unsigned short slot = 0; slot < leaf->slotuse - 1; ++slot)
@@ -3839,7 +3839,7 @@ private:
             const InnerNode* inner = static_cast<const InnerNode*>(n);
             vstats.inner_nodes++;
 
-            tlx_die_unless(inner == root_ || inner->slotuse >= inner_slotmin - 1);
+            tlx_die_unless(inner == root_.load() || inner->slotuse >= inner_slotmin - 1);
             tlx_die_unless(inner->slotuse > 0);
 
             for (unsigned short slot = 0; slot < inner->slotuse - 1; ++slot)
