@@ -1448,6 +1448,7 @@ private:
 
     //! Correctly free either inner or leaf node, destructs all contained key
     //! and value objects.
+    // TODO lock, wake all waiters
     void free_node(node* n) {
         if (n->is_leafnode()) {
             LeafNode* ln = static_cast<LeafNode*>(n);
@@ -2103,7 +2104,7 @@ private:
         if (!root_.load())
         {
             LeafNode* newroot = allocate_leaf();
-            newroot->lock->writelock(); // ask baba TODO
+            newroot->lock->writelock();
 
             node* expected = nullptr;
             bool wonrace = root_.compare_exchange_strong(expected, newroot);
@@ -2609,7 +2610,10 @@ private:
 
         //! Deletion successful, children nodes were merged and the parent needs
         //! to remove the empty node.
-        btree_fixmerge = 4
+        btree_fixmerge = 4,
+
+        // TODO yes this is stupid i know
+        retry = 5
     };
 
     //! B+ tree recursive deletion has much information which is needs to be
@@ -2649,6 +2653,11 @@ private:
         }
     };
 
+    enum erase_start_res {
+        erased = 0,
+        not_found = 1,
+        retry = 2
+    };
     //! \}
 
 public:
@@ -2657,71 +2666,16 @@ public:
 
     //! Erases one (the first) of the key/data pairs associated with the given
     //! key.
-    bool erase_one(const key_type& key) {
-        TLX_BTREE_PRINT("BTree::erase_one(" << key <<
-                        ") on btree size " << size());
-
-        if (self_verify) verify();
-
-        if (!root_.load()) return false;
-
-        if (!root_.load()->is_leafnode())
-        {
-            if (root_.load()->slotuse <= 1)
-            {
-                InnerNode* root = static_cast<InnerNode*>(root_.load());
-                TLX_BTREE_ASSERT(root->slotuse == 1);
-                if (root->level == 1)
-                {
-                    // then these must be leaves
-                    LeafNode* leftchild = static_cast<LeafNode*>(root->childid[0]);
-                    LeafNode* rightchild = static_cast<LeafNode*>(root->childid[1]);
-
-                    if (leftchild->slotuse + rightchild->slotuse < inner_slotmax)
-                    {
-                        // case: they can merge
-                        merge_leaves(leftchild, rightchild, root);
-                        free_node(rightchild);
-                        free_node(root);
-                        root_ = leftchild;
-                    }
-                } else {
-                    InnerNode* leftchild = static_cast<InnerNode*>(root->childid[0]);
-                    InnerNode* rightchild = static_cast<InnerNode*>(root->childid[1]);
-
-                    if (leftchild->slotuse + rightchild->slotuse < inner_slotmax)
-                    {
-                        // case: they can merge
-                        merge_inner(leftchild, rightchild, root, 0);
-                        free_node(rightchild);
-                        free_node(root);
-                        root_ = leftchild;
-                    }
-                }
-            }
-        }
-
-        if (self_verify) verify();
-
-        result_t result = erase_one_descend(
-            key, root_.load());
-
-        if (!result.has(btree_not_found))
-            --stats_.size;
-
-        if (stats_.size == 0) {
-            free_node(root_.load());
-            root_ = nullptr;
-        }
-
-#ifdef TLX_BTREE_DEBUG
-        if (debug) print(std::cout);
-#endif
-        if (self_verify) verify();
-
-        return !result.has(btree_not_found);
+    bool erase_one(const key_type key) {
+        erase_start_res res;
+        do {
+            res = erase_one_start(key);
+        } while (res == retry);
+        
+        return res == erased;
     }
 
+    // TODO below erase
     //! Erases all the key/data pairs associated with the given key. This is
     //! implemented using erase_one().
     size_type erase(const key_type& key) {
@@ -2751,7 +2705,7 @@ public:
         } else {
             result_t result = erase_iter_descend(
                 iter, root_.load(), nullptr, nullptr, nullptr, nullptr, nullptr, 0);
-            successful = !result.has(btree_not_found);
+            successful = result == btree_ok;
         }
 
         if (successful)
@@ -2777,6 +2731,108 @@ private:
     //! \name Private Erase Functions
     //! \{
 
+    erase_start_res erase_one_start(const key_type& key) {
+        TLX_BTREE_PRINT("BTree::erase_one(" << key <<
+                        ") on btree size " << size());
+
+        if (self_verify) verify();
+
+        if (!root_.load()) return not_found;
+
+        node* oldroot = root_;
+        root_.load()->lock->readlock();
+        if (oldroot != root_) return retry; // root was changed by other thread
+
+        if (!root_.load()->is_leafnode())
+        {
+            if (root_.load()->slotuse <= 1)
+            {
+                InnerNode* root = static_cast<InnerNode*>(root_.load());
+                TLX_BTREE_ASSERT(root->slotuse == 1);
+                if (root->level == 1)
+                {
+                    root->childid[0]->lock->readlock();
+                    root->childid[1]->lock->readlock();
+                    // then these must be leaves
+                    LeafNode* leftchild = static_cast<LeafNode*>(root->childid[0]);
+                    LeafNode* rightchild = static_cast<LeafNode*>(root->childid[1]);
+
+                    if (leftchild->slotuse + rightchild->slotuse < inner_slotmax)
+                    {
+                        // case: they can merge
+                        root->lock->upgradelock();
+                        leftchild->lock->upgradelock();
+                        rightchild->lock->upgradelock();
+
+                        if (root_.load()->slotuse > 1 || root_.load()->is_leafnode()) {
+                            root->lock->write_unlock();
+                            leftchild->lock->write_unlock();
+                            rightchild->lock->write_unlock();
+                            return retry;
+                        }
+
+                        merge_leaves(leftchild, rightchild, root);
+                        free_node(rightchild);
+                        free_node(root);
+                        root_ = leftchild;
+                        leftchild->lock->downgrade_lock();
+                    }
+                } else {
+                    InnerNode* leftchild = static_cast<InnerNode*>(root->childid[0]);
+                    InnerNode* rightchild = static_cast<InnerNode*>(root->childid[1]);
+
+                    if (leftchild->slotuse + rightchild->slotuse < inner_slotmax)
+                    {
+                        // case: they can merge
+                        root->lock->upgradelock();
+                        leftchild->lock->upgradelock();
+                        rightchild->lock->upgradelock();
+
+                        if (root_.load()->slotuse > 1 || root_.load()->is_leafnode()) {
+                            root->lock->write_unlock();
+                            leftchild->lock->write_unlock();
+                            rightchild->lock->write_unlock();
+                            return retry;
+                        }
+
+                        merge_inner(leftchild, rightchild, root, 0);
+                        free_node(rightchild);
+                        free_node(root);
+                        root_ = leftchild;
+                        leftchild->lock->downgrade_lock();
+                    }
+                }
+            }
+        }
+
+        if (self_verify) verify();
+
+        result_t result = erase_one_descend(
+            key, root_.load());
+
+        if (result == retry) return retry;
+
+        if (result == btree_ok)
+            --stats_.size;
+
+        if (stats_.size == 0) {
+            root_.load()->lock->writelock(); // TODO ask baba
+            if (stats_.size == 0) { // if the situation hasn't changed while waiting
+                free_node(root_.load());
+                root_ = nullptr;
+            } else {
+                root
+            }
+        }
+
+#ifdef TLX_BTREE_DEBUG
+        if (debug) print(std::cout);
+#endif
+        if (self_verify) verify();
+
+        return result == btree_ok;
+    }
+
     /*!
      * Erase one (the first) key/data pair in the B+ tree matching key.
      *
@@ -2791,6 +2847,8 @@ private:
         TLX_BTREE_PRINT("erase one descend(" << key << "," << curr << 
                 ") on btree size " << size());
         
+        TLX_BTREE_ASSERT(curr->lock->readlocked());
+
         if (self_verify) verify();
 
         if (curr->is_leafnode())
@@ -2805,17 +2863,26 @@ private:
             {
                 TLX_BTREE_PRINT("Could not find key " << key << " to erase.");
 
+                leaf->lock->read_unlock();
                 return btree_not_found;
             }
 
             TLX_BTREE_PRINT(
                 "Found key in leaf " << curr << " at slot " << slot);
 
+            leaf->lock->upgradelock();
+            if (slot >= leaf->slotuse || !key_equal(key, leaf->key(slot)))
+            {
+                leaf->lock->write_unlock();
+                return retry;
+            }
+
             std::copy(leaf->slotdata + slot + 1, leaf->slotdata + leaf->slotuse,
                       leaf->slotdata + slot);
 
             leaf->slotuse--;
 
+            leaf->lock->write_unlock();
             return btree_ok;
         }
         else // !curr->is_leafnode()
