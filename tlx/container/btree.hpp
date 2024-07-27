@@ -2815,16 +2815,6 @@ private:
         if (result == btree_ok)
             --stats_.size;
 
-        if (stats_.size == 0) {
-            root_.load()->lock->writelock(); // TODO ask baba
-            if (stats_.size == 0) { // if the situation hasn't changed while waiting
-                free_node(root_.load());
-                root_ = nullptr;
-            } else {
-                root
-            }
-        }
-
 #ifdef TLX_BTREE_DEBUG
         if (debug) print(std::cout);
 #endif
@@ -3794,7 +3784,7 @@ public:
     //! function requires that the header is compiled with TLX_BTREE_DEBUG and
     //! that key_type is printable via std::ostream.
     void print(std::ostream& os) const {
-        if (root_.load()) {
+        if (root_.load() && root_.load()->slotuse > 0) {
             print_node(os, root_.load(), 0, true);
         }
     }
@@ -3879,7 +3869,7 @@ public:
         key_type minkey, maxkey;
         tree_stats vstats;
 
-        if (root_.load())
+        if (root_.load() && root_.load()->slotuse > 0)
         {
             verify_node(root_.load(), &minkey, &maxkey, vstats);
 
