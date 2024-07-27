@@ -36,7 +36,12 @@ static const bool tlx_more_tests = false;
 #endif
 
 static const bool test_multi = false;
-static const auto seed = std::random_device{}();
+static const auto seed = 729098293; //std::random_device{}();
+
+
+namespace tlx{
+int seq = 0; // TODO
+}
 
 /******************************************************************************/
 // Instantiation Tests
