@@ -247,19 +247,12 @@ public:
 
         void addtoread() {
             std::thread::id cur = std::this_thread::get_id();
-            if (curread.contains(cur)) {
-                assert(false);
-                // TODO delete
-            }
             TLX_BTREE_ASSERT(!curread.contains(cur));
             curread.insert(cur);
         }
 
         void delfromread() {
             std::thread::id cur = std::this_thread::get_id();
-            if (!curread.contains(cur)) {
-                assert(false);// TODO delete
-            }
             TLX_BTREE_ASSERT(curread.contains(cur));
             curread.erase(cur);
         }
@@ -370,19 +363,12 @@ public:
 
         void downgrade_lock() {
             lock_type lock(mutex);
-            if (!haswriter) {
-                assert(false);
-                // TODO delete
-            }
             TLX_BTREE_ASSERT(haswriter);
             addtoread();
             delfromwrite();
             haswriter = false;
             numreader++;
             readcv.notify_all();
-            if (seq == 497) {
-                assert(true); // TODO delete
-            }
             DBGPRT();
         }
     };
@@ -1982,7 +1968,6 @@ public: // TODO skipping these two sections
                 if (other.root_.load()) {
                     root_ = copy_recursive(other.root_.load());
                 }
-                // TODO stats_ = other.stats_;
                 stats_.copy(other.stats_);
             }
 
@@ -2252,9 +2237,6 @@ private:
     insert_res insert_descend(
         node* n, const key_type& key, const value_type& value) {
         
-        if (!n->lock->readlocked()) {
-            assert(false); // TODO delete
-        }
         TLX_BTREE_ASSERT(n->lock->readlocked());
         
         if (!n->is_leafnode())
@@ -2699,7 +2681,6 @@ public:
         return res == btree_ok;
     }
 
-    // TODO below erase
     //! Erases all the key/data pairs associated with the given key. This is
     //! implemented using erase_one().
     size_type erase(const key_type& key) {
@@ -3967,9 +3948,6 @@ public:
         {
             verify_node(root_.load(), &minkey, &maxkey, vstats);
 
-            if (vstats.size != stats_.size) {
-                assert(false); // TODO delete
-            }
             tlx_die_unless(vstats.size == stats_.size);
             tlx_die_unless(vstats.leaves == stats_.leaves);
             tlx_die_unless(vstats.inner_nodes == stats_.inner_nodes);
@@ -3990,10 +3968,7 @@ private:
 
             tlx_die_unless(leaf == root_.load() || leaf->slotuse >= leaf_slotmin - 1);
             tlx_die_unless(leaf->slotuse > 0);
-            if(leaf->lock->readlocked()) {
-                assert(false); // TODO delete
-            } 
-            tlx_die_unless(!leaf->lock->readlocked()); // TODO these two lines won't work in erase verifying
+            tlx_die_unless(!leaf->lock->readlocked());
             tlx_die_unless(!leaf->lock->writelocked());
 
             for (unsigned short slot = 0; slot < leaf->slotuse - 1; ++slot)
