@@ -285,7 +285,7 @@ public:
         }
 
 #define DBGPRT() \
-        if (nodep->is_leafnode()) { \
+        if (/*nodep->is_leafnode()*/ false) { \
             std::cout << __func__ << " " << seq++ << ": node=" << nodep << " "; \
             print_node(std::cout, nodep); \
         }
@@ -2803,8 +2803,14 @@ private:
                         free_node(root);
                         root_ = leftchild;
                         leftchild->lock->downgrade_lock();
+                    } else {
+                        leftchild->lock->read_unlock();
+                        rightchild->lock->read_unlock();
                     }
                 } else {
+                    root->childid[0]->lock->readlock();
+                    root->childid[1]->lock->readlock();
+
                     InnerNode* leftchild = static_cast<InnerNode*>(root->childid[0]);
                     InnerNode* rightchild = static_cast<InnerNode*>(root->childid[1]);
 
@@ -2827,6 +2833,9 @@ private:
                         free_node(root);
                         root_ = leftchild;
                         leftchild->lock->downgrade_lock();
+                    } else {
+                        leftchild->lock->read_unlock();
+                        rightchild->lock->read_unlock();
                     }
                 }
             }
@@ -2945,32 +2954,28 @@ private:
 
                     TLX_BTREE_PRINT("erase one descend: leaf redistribute");
                     redistribute_leaf_children(parent, leftchild, &rightchild, fake_slot);
-                    // TODO make sure parent stuff correct
+
                     if (rightchild != nullptr) {
                         // assuming merge didn't happen
                         if (key_greater(key, parent->key(slot)) &&
                                 slot == fake_slot) {
-                            leftchild->lock->read_unlock();
                             slot++;
                         } else if (key_greaterequal(parent->key(fake_slot), key) &&
                                 slot != fake_slot) {
-                            rightchild->lock->read_unlock();
                             slot--;
                         }
                     } else if (slot != fake_slot) { // && rightchild->slotuse == 0
                         slot--;
-                    } else {
-                        rightchild->lock->read_unlock();
                     }
 
                     TLX_BTREE_ASSERT(find_lower(parent, key) == slot);
-                    TLX_BTREE_ASSERT(parent->childid[slot]->lock->readlocked());
-                } else {
-                    if (slot == fake_slot)
-                        rightchild->lock->read_unlock();
-                    else
-                        leftchild->lock->read_unlock();
                 }
+
+                leftchild->lock->read_unlock();
+                if (rightchild != nullptr)
+                        rightchild->lock->read_unlock();
+
+                parent->childid[slot]->lock->readlock();
             }
             else
             {
@@ -3002,31 +3007,28 @@ private:
 
                     TLX_BTREE_PRINT("erase one descend: inner redistribute");
                     redistribute_inner_children(parent, leftchild, &rightchild, fake_slot);
+                    
                     if (rightchild != nullptr) {
                         // assuming merge didn't happen
                         if (key_greater(key, parent->key(slot)) &&
                                 slot == fake_slot) {
-                            leftchild->lock->read_unlock();
                             slot++;
                         } else if (key_greaterequal(parent->key(fake_slot), key) &&
                                 slot != fake_slot) {
-                            rightchild->lock->read_unlock();
                             slot--;
                         }
                     } else if (slot != fake_slot) { // && rightchild->slotuse == 0
                         slot--;
-                    } else {
-                        rightchild->lock->read_unlock();
                     }
 
                     TLX_BTREE_ASSERT(find_lower(parent, key) == slot);
-                    TLX_BTREE_ASSERT(parent->childid[slot]->lock->readlocked());
-                } else {
-                    if (slot == fake_slot)
-                        rightchild->lock->read_unlock();
-                    else
-                        leftchild->lock->read_unlock();
                 }
+
+                leftchild->lock->read_unlock();
+                if (rightchild != nullptr)
+                        rightchild->lock->read_unlock();
+
+                parent->childid[slot]->lock->readlock();
             }
 
             //if (self_verify) verify();
@@ -3104,7 +3106,8 @@ private:
 
         parent->lock->downgrade_lock();
         leftchild->lock->downgrade_lock();
-        rightchild->lock->downgrade_lock();
+        if (*rightchildp != nullptr)
+            rightchild->lock->downgrade_lock();
     }
 
     // Redistributes/merges the keys of two adjacent inner children of the parent.
@@ -3172,7 +3175,7 @@ private:
 
         parent->lock->downgrade_lock();
         leftchild->lock->downgrade_lock();
-        if (rightchild != nullptr)
+        if (*rightchildp != nullptr)
             rightchild->lock->downgrade_lock();
     }
 
