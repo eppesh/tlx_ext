@@ -235,10 +235,12 @@ public:
         mutex_type mutex;
         cv_type readcv;
         cv_type writecv;
+        cv_type upgradecv;
         unsigned int numreader = 0;
         bool haswriter = false;
         int writerswaiting = 0;
         int readerswaiting = 0;
+        int upgradewaiting = 0;
 
 #ifdef TLX_BTREE_DEBUG
         std::unordered_set<std::thread::id> curwrite;
@@ -310,15 +312,14 @@ public:
             delfromread();
             addtowrite();
 
-            if (numreader > 1 || haswriter) {
-                writerswaiting++;
-                writecv.wait(lock, [this]() {
-                    return this->numreader <= 1 && !this->haswriter;
-                });
-                writerswaiting--;
-            }
-            TLX_BTREE_ASSERT(numreader == 1);
             numreader--;
+            if (numreader > 1 || haswriter) {
+                upgradewaiting++;
+                upgradecv.wait(lock, [this]() {
+                    return this->numreader == 0 && !this->haswriter;
+                });
+                upgradewaiting--;
+            }
             haswriter = true;
             DBGPRT();
         }
@@ -343,8 +344,10 @@ public:
             delfromread();
             TLX_BTREE_ASSERT(numreader >= 1);
             numreader--;
-            if (numreader == 0)
-                writecv.notify_one();
+            if (numreader == 0) {
+                if (upgradewaiting > 0) upgradecv.notify_one();
+                else writecv.notify_one();
+            }
             DBGPRT();
         }
 
@@ -353,7 +356,9 @@ public:
             delfromwrite();
             TLX_BTREE_ASSERT(haswriter);
             haswriter = false;
-            if (writerswaiting > 0) {
+            if (upgradewaiting > 0) {
+                upgradecv.notify_one();
+            } else if (writerswaiting > 0) {
                 writecv.notify_one();
             } else {
                 readcv.notify_all();
@@ -1466,6 +1471,7 @@ private:
     //! and value objects.
     // TODO lock, wake all waiters
     void free_node(node* n) {
+        tlx_die_unless(n->lock->readerswaiting == 0 && n->lock->writerswaiting == 0);
         if (n->is_leafnode()) {
             LeafNode* ln = static_cast<LeafNode*>(n);
             typename LeafNode::alloc_type a(leaf_node_allocator());
@@ -2145,8 +2151,11 @@ private:
                 key_type rightkey = key_type();
                 node* rightleaf = nullptr;
 
-                root_.load()->lock->upgradelock();
-                if (!root->is_full()) return insert_res();
+                root->lock->upgradelock();
+                if (!root->is_full()) {
+                    root->lock->write_unlock();
+                    return insert_res();
+                }
 
                 split_leaf_node(root, &rightkey, &rightleaf);
                 
@@ -2185,8 +2194,11 @@ private:
                 key_type rightkey = key_type();
                 node* rightleaf = nullptr;
 
-                root_.load()->lock->upgradelock();
-                if (!root->is_full()) return insert_res();
+                root->lock->upgradelock();
+                if (!root->is_full()) {
+                    root->lock->write_unlock();
+                    return insert_res();
+                }
 
                 split_inner_node(root, &rightkey, &rightleaf);
 
@@ -2246,7 +2258,13 @@ private:
 
             inner->childid[slot]->lock->readlock();
             check_split_res res = check_split_child(inner, inner->childid[slot], slot);
-            if (res == retry) return insert_res();
+            if (res == retry) {
+                n->lock->read_unlock();
+                inner->childid[slot]->lock->read_unlock();
+                // don't need to unlock slot + 1 child because check_split_child
+                // won't have gotten there
+                return insert_res();
+            }
             
             // unlocking the irrelevant child
             if (res == did_split) {
@@ -2289,7 +2307,10 @@ private:
             TLX_BTREE_ASSERT(leaf->slotuse + 1 <= leaf_slotmax);
 
             leaf->lock->upgradelock();
-            if (slot < 0 || slot > leaf->slotuse) return insert_res();
+            if (slot < 0 || slot > leaf->slotuse) {
+                leaf->lock->write_unlock();
+                return insert_res();
+            }
 
             std::copy_backward(
                 leaf->slotdata + slot, leaf->slotdata + leaf->slotuse,
@@ -2301,7 +2322,6 @@ private:
             insert_res ret_val = insert_res(iterator(leaf, slot), true);
             leaf->lock->write_unlock();
             return ret_val;
-            // TODO for all retries, unlock first
         }
     }
 
@@ -2319,9 +2339,9 @@ private:
             {
                 parent->lock->upgradelock();
                 child->lock->upgradelock();
-
-                if (parent->childid[slot] != child) return retry;
-                if (!child->is_full()) return retry;
+                
+                // parent and child are unlocked in insert_descend
+                if (parent->childid[slot] != child || !child->is_full()) return retry;
 
                 key_type newkey = key_type();
                 node* newleaf = nullptr;
@@ -2351,6 +2371,7 @@ private:
                 parent->lock->upgradelock();
                 child->lock->upgradelock();
 
+                // parent and child are unlocked in insert_descend
                 if (parent->childid[slot] != child) return retry;
                 if (!child->is_full()) return retry;
 
