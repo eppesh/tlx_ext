@@ -1746,22 +1746,36 @@ public:
     //! Tries to locate a key in the B+ tree and returns an iterator to the
     //! key/data slot if found. If unsuccessful it returns end().
     iterator find(const key_type& key) {
-        node* n = root_.load();
-        if (!n) return end();
+        while (true) {
+            node* n = root_.load();
+            if (!n) return end();
 
-        while (!n->is_leafnode())
-        {
-            const InnerNode* inner = static_cast<const InnerNode*>(n);
-            unsigned short slot = find_lower(inner, key);
+            n->lock->readlock();
+            if (n != root_) {
+                n->lock->read_unlock();
+                continue;
+            }
 
-            n = inner->childid[slot];
+            while (!n->is_leafnode())
+            {
+                const InnerNode* inner = static_cast<const InnerNode*>(n);
+                unsigned short slot = find_lower(inner, key);
+
+                inner->childid[slot]->lock->readlock();
+                n->lock->read_unlock();
+
+                n = inner->childid[slot];
+            }
+
+            LeafNode* leaf = static_cast<LeafNode*>(n);
+
+            unsigned short slot = find_lower(leaf, key);
+
+            auto res = (slot < leaf->slotuse && key_equal(key, leaf->key(slot)))
+                   ? iterator(leaf, slot) : end();
+            leaf->lock->read_unlock();
+            return res;
         }
-
-        LeafNode* leaf = static_cast<LeafNode*>(n);
-
-        unsigned short slot = find_lower(leaf, key);
-        return (slot < leaf->slotuse && key_equal(key, leaf->key(slot)))
-               ? iterator(leaf, slot) : end();
     }
 
     //! Tries to locate a key in the B+ tree and returns an constant iterator to
