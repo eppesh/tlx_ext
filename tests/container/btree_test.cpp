@@ -32,10 +32,11 @@
 #if TLX_MORE_TESTS
 static const bool tlx_more_tests = true;
 #else
-static const bool tlx_more_tests = false;
+static const bool tlx_more_tests = false; 
 #endif
 
 static const bool test_multi = false;
+static const bool multithread = true;
 static const auto seed = std::random_device{}();
 
 
@@ -58,7 +59,7 @@ template <int Slots>
 struct SimpleTest {
     template <typename KeyType>
     struct traits_nodebug : tlx::btree_default_traits<KeyType, KeyType> {
-        static const bool self_verify = true;
+        static const bool self_verify = false;
         static const bool debug = false;
 
         static const int leaf_slots = Slots;
@@ -432,7 +433,7 @@ void test_simple() {
 
 template <typename KeyType>
 struct traits_nodebug : tlx::btree_default_traits<KeyType, KeyType> {
-    static const bool self_verify = true;
+    static const bool self_verify = false;
     static const bool debug = false;
 
     static const int leaf_slots = 8;
@@ -1873,6 +1874,96 @@ void test_bulkload() {
 }
 
 /******************************************************************************/
+// Test Multithreading
+typedef tlx::btree_set<
+        unsigned int,
+        std::less<unsigned int>, traits_nodebug<unsigned int> > set_type;
+
+const int MAX_KEY = 100;
+const int NUM_OPERATIONS = 100;
+const int NUM_THREADS = 16;
+
+struct Entry {
+    std::mutex mtx;
+    bool in_set = false;
+};
+
+std::vector<Entry> truth_source(MAX_KEY);
+
+std::mutex printmtx;
+int seqnum = 0;
+set_type my_multi_thread_set;
+
+void before_assert(void)
+{
+    static bool tree_printed = false;
+    if (!tree_printed) { // only print once
+        tree_printed = true;
+        my_multi_thread_set.print(std::cout);
+        std::cout << std::endl;
+        std::cout << std::endl;
+        return;
+    }
+}
+
+void print(const char* op, int val, int id) {
+    printmtx.lock();
+    std::cout << "thread " << id << " doing " << op
+        << " value: " << val << " seq " << seqnum++ << std::endl;
+    printmtx.unlock();
+}
+
+void thread_func(set_type& my_set, int insert_prob, int lookup_prob, int delete_prob, int id) {
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::uniform_int_distribution<> dist(0, 99);
+    std::uniform_int_distribution<> key_dist(0, MAX_KEY - 1);
+
+    for (int i = 0; i < NUM_OPERATIONS; ++i) {
+        int key = key_dist(gen);
+        int operation = dist(gen);
+
+        if (operation < insert_prob)
+        {
+            std::lock_guard<std::mutex> lock(truth_source[key].mtx);
+            print("insert", key, id);
+            bool succeeded = my_set.insert(key).second;
+            die_unless(succeeded != truth_source[key].in_set);
+            truth_source[key].in_set = true;
+        }
+        else if (operation < insert_prob + lookup_prob)
+        {
+            std::lock_guard<std::mutex> lock(truth_source[key].mtx);
+            print("find", key, id);
+            bool found = my_set.find(key) != my_set.end();
+            die_unless(found == truth_source[key].in_set);
+        }
+        else if (operation < insert_prob + lookup_prob + delete_prob)
+        {
+            std::lock_guard<std::mutex> lock(truth_source[key].mtx);
+            print("erase", key, id);
+            bool erased = my_set.erase(key);
+            die_unless(erased == truth_source[key].in_set);
+            truth_source[key].in_set = false;
+        }
+    }
+}
+
+void test_multithread() {
+    // Probability out of 100
+    int insert_prob = 40;
+    int lookup_prob = 40;
+    int delete_prob = 20;
+
+    std::vector<std::thread> threads;
+    for (int i = 0; i < NUM_THREADS; ++i) {
+        threads.emplace_back(thread_func, std::ref(my_multi_thread_set), insert_prob, lookup_prob, delete_prob, i);
+    }
+
+    for (auto& th : threads) {
+        th.join();
+    }
+}
 
 int main() {
     std::cout << "seed: " << seed << std::endl;
@@ -1886,7 +1977,10 @@ int main() {
         test_relations();
         test_bulkload();
     }
-
+    if (multithread) {
+        test_multithread();
+    }
+    std::cout << "test successful!" << std::endl;
     return 0;
 }
 

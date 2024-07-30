@@ -17,6 +17,8 @@
 #include <stdexcept>
 #include <string>
 
+extern void before_assert(void);
+
 namespace tlx {
 
 /******************************************************************************/
@@ -65,6 +67,7 @@ bool set_die_with_exception(bool b);
 #define tlx_die_unless(X)                                                 \
     do {                                                                  \
         if (!(X)) {                                                       \
+            before_assert();                                              \
             ::tlx::die_with_message(                                      \
                 "DIE: Assertion \"" #X "\" failed!", __FILE__, __LINE__); \
         }                                                                 \
@@ -75,6 +78,7 @@ bool set_die_with_exception(bool b);
 #define tlx_die_if(X)                                                        \
     do {                                                                     \
         if (X) {                                                             \
+            before_assert();                                              \
             ::tlx::die_with_message(                                         \
                 "DIE: Assertion \"" #X "\" succeeded!", __FILE__, __LINE__); \
         }                                                                    \
@@ -134,6 +138,7 @@ inline bool die_equal_compare(double a, double b) {
         auto x__ = (X);                                     /* NOLINT */    \
         auto y__ = (Y);                                     /* NOLINT */    \
         if (!::tlx::die_equal_compare(x__, y__)) {                          \
+            before_assert();                                              \
             tlx_die_with_sstream("DIE-UNEQUAL: " #X " != " #Y " : "         \
                                  "\"" << x__ << "\" != \"" << y__ << "\""); \
         }                                                                   \
@@ -155,6 +160,7 @@ inline bool die_equal_compare(double a, double b) {
         auto x__ = (X);                                     /* NOLINT */       \
         auto y__ = (Y);                                     /* NOLINT */       \
         if (!::tlx::die_equal_compare(x__, y__)) {                             \
+            before_assert();                                              \
             tlx_die_with_sstream("DIE-UNEQUAL: " #X " != " #Y " : "            \
                                  "\"" << x__ << "\" != \"" << y__ << "\"\n" << \
                                  msg << '\n');                                 \
@@ -226,6 +232,7 @@ inline bool die_equal_eps_compare(TypeA x, TypeB y, double eps) {
         auto x__ = (X);                                     /* NOLINT */    \
         auto y__ = (Y);                                     /* NOLINT */    \
         if (::tlx::die_equal_compare(x__, y__)) {                           \
+            before_assert();                                              \
             tlx_die_with_sstream("DIE-EQUAL: " #X " == " #Y " : "           \
                                  "\"" << x__ << "\" == \"" << y__ << "\""); \
         }                                                                   \
@@ -247,6 +254,7 @@ inline bool die_equal_eps_compare(TypeA x, TypeB y, double eps) {
         auto x__ = (X);                                     /* NOLINT */       \
         auto y__ = (Y);                                     /* NOLINT */       \
         if (::tlx::die_equal_compare(x__, y__)) {                              \
+            before_assert();                                              \
             tlx_die_with_sstream("DIE-EQUAL: " #X " == " #Y " : "              \
                                  "\"" << x__ << "\" == \"" << y__ << "\"\n" << \
                                  msg << '\n');                                 \
@@ -265,6 +273,7 @@ inline bool die_equal_eps_compare(TypeA x, TypeB y, double eps) {
         catch (const exception_type&) {                                     \
             break;                                                          \
         }                                                                   \
+        before_assert();                                                    \
         ::tlx::die_with_message(                                            \
             "DIE-UNLESS-THROWS: " #code " - NO EXCEPTION " #exception_type, \
             __FILE__, __LINE__);                                            \
