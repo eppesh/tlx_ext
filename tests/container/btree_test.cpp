@@ -18,6 +18,8 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <csignal>
+#include <unistd.h>
 #include <iostream>
 #include <set>
 #include <vector>
@@ -27,12 +29,13 @@
 #include <random>
 #include <string>
 #include <utility>
+#include <map>
 
 
 #if TLX_MORE_TESTS
 static const bool tlx_more_tests = true;
 #else
-static const bool tlx_more_tests = false; 
+static const bool tlx_more_tests = false;
 #endif
 
 static const bool test_multi = false;
@@ -71,7 +74,7 @@ struct SimpleTest {
             unsigned int,
             std::less<unsigned int>, traits_nodebug<unsigned int> >
         btree_type;
-        
+
 
         btree_type bt, bt2;
         bt.verify();
@@ -139,7 +142,7 @@ struct SimpleTest {
             for (auto num : v) {
               die_unless(btree.exists(num));
             }
-            
+
             // random erase
             std::ranges::shuffle(v, gen);
             for (auto num : v) {
@@ -207,7 +210,7 @@ struct SimpleTest {
             for (auto num : v) {
               die_unless(btree.exists(num));
             }
-            
+
             // random erase
             std::ranges::shuffle(v, gen);
             for (auto num : v) {
@@ -525,7 +528,7 @@ void test_large_multiset(const unsigned int insnum, const unsigned int modulo) {
         unsigned int,
         std::greater<unsigned int>, traits_nodebug<unsigned int> >
     btree_type;
-    
+
     btree_type btree;
     std::mt19937 gen(std::random_device{}());
     std::vector<int> v(insnum);
@@ -544,7 +547,7 @@ void test_large_multiset(const unsigned int insnum, const unsigned int modulo) {
     for (auto num : v) {
       die_unless(btree.exists(num%modulo));
     }
-    
+
     // random erase
     std::ranges::shuffle(v, gen);
     for (auto num : v) {
@@ -577,7 +580,7 @@ void test_large_sequence() {
         unsigned int,
         std::less<unsigned int>, traits_nodebug<unsigned int> > btree_type;
 
-    typedef std::set<unsigned int> stdset_type; 
+    typedef std::set<unsigned int> stdset_type;
 #endif
 
     btree_type bt;
@@ -1714,7 +1717,7 @@ void test_struct() {
         for (auto num : v) {
           die_unless(btree.exists(num));
         }
-        
+
         // random erase
         std::ranges::shuffle(v, gen);
         for (auto num : v) {
@@ -1754,7 +1757,7 @@ void test_relations() {
         // from frozenca's btree tests
         btree_type btree;
         int n = 320;
-        
+
         std::mt19937 gen(seed);
         std::vector<int> v(n);
         std::iota(v.begin(), v.end(), 0);
@@ -1765,7 +1768,7 @@ void test_relations() {
             bt2.insert(num);
         }
     }
-    
+
 
     die_unless(bt1 == bt2);
 
@@ -1881,7 +1884,6 @@ typedef tlx::btree_set<
 
 const int MAX_KEY = 100;
 const int NUM_OPERATIONS = 100;
-const int NUM_THREADS = 16;
 
 struct Entry {
     std::mutex mtx;
@@ -1893,6 +1895,59 @@ std::vector<Entry> truth_source(MAX_KEY);
 std::mutex printmtx;
 int seqnum = 0;
 set_type my_multi_thread_set;
+
+const int NUM_THREADS = 16;
+
+// Global array of thread information
+std::vector<thread_info> global_thread_info(NUM_THREADS);
+std::atomic<int> thread_count(0);
+std::map<std::thread::id, int> thread_id_map;
+
+// Signal handler for SIGUSR1
+void signal_handler(int signum) {
+    if (signum == SIGUSR1) {
+        std::cout << "Received SIGUSR1. Current thread states:\n";
+        my_multi_thread_set.print(std::cout);
+        for (int i = 0; i < NUM_THREADS; ++i) {
+            std::cout << "Thread " << i  << " id: " << global_thread_info[i].id
+                << " - Node: " << global_thread_info[i].cur_node
+                << ", Operation: " << lock_type_to_string(global_thread_info[i].op)
+                << std::endl;
+            if (global_thread_info[i].cur_node) {
+                set_type::btree_impl::node *nodep = static_cast<set_type::btree_impl::node *>(global_thread_info[i].cur_node);
+                auto lock = nodep->lock;
+                std::cout << "  curread: ";
+                for (auto id: lock->curread) {
+                    std::cout << thread_id_map[id] << ' ';
+                }
+                std::cout << std::endl;
+                std::cout << "  curwrite: ";
+                for (auto id: lock->curwrite) {
+                    std::cout << thread_id_map[id] << ' ';
+                }
+                std::cout << std::endl;
+            }
+        }
+    } else {
+        std::cout << "Received signal " << signum << std::endl;
+    }
+}
+
+// Function to initialize thread debug info
+void initialize_thread_info(int index) {
+    std::lock_guard<std::mutex> lock(printmtx);
+    local_debug_info.tinfo = &global_thread_info[index];
+    local_debug_info.tinfo->id = std::this_thread::get_id();
+    local_debug_info.tinfo->cur_node = nullptr;
+    local_debug_info.tinfo->op = 0;
+    thread_id_map[std::this_thread::get_id()] = index;
+}
+
+// Function to cleanup thread debug info
+void cleanup_thread_info() {
+    local_debug_info.tinfo->cur_node = nullptr;
+    local_debug_info.tinfo->op = 0;
+}
 
 void before_assert(void)
 {
@@ -1908,8 +1963,8 @@ void before_assert(void)
 
 void print(const char* op, int val, int id) {
     printmtx.lock();
-    std::cout << "thread " << id << " doing " << op
-        << " value: " << val << " seq " << seqnum++ << std::endl;
+    std::cout << seqnum++ << ": thread " << id << " doing " << op
+        << " value: " << val << std::endl;
     printmtx.unlock();
 }
 
@@ -1918,6 +1973,9 @@ void thread_func(set_type& my_set, int insert_prob, int lookup_prob, int delete_
     std::mt19937 gen(rd());
     std::uniform_int_distribution<> dist(0, 99);
     std::uniform_int_distribution<> key_dist(0, MAX_KEY - 1);
+
+    initialize_thread_info(id);
+    //usleep(10 * 1000 * 1000ull); // sleep for debugging
 
     for (int i = 0; i < NUM_OPERATIONS; ++i) {
         int key = key_dist(gen);
@@ -1946,7 +2004,10 @@ void thread_func(set_type& my_set, int insert_prob, int lookup_prob, int delete_
             die_unless(erased == truth_source[key].in_set);
             truth_source[key].in_set = false;
         }
+        //usleep(10 * 1000 * 1000ull); // sleep for debugging
     }
+
+    cleanup_thread_info();
 }
 
 void test_multithread() {
@@ -1954,6 +2015,9 @@ void test_multithread() {
     int insert_prob = 40;
     int lookup_prob = 40;
     int delete_prob = 20;
+
+    // Register signal handler for SIGUSR1
+    std::signal(SIGUSR1, signal_handler);
 
     std::vector<std::thread> threads;
     for (int i = 0; i < NUM_THREADS; ++i) {
@@ -1967,6 +2031,7 @@ void test_multithread() {
 
 int main() {
     std::cout << "seed: " << seed << std::endl;
+    std::cout << "pid: " << getpid() << std::endl;
     test_simple();
     if (tlx_more_tests) {
         test_large();

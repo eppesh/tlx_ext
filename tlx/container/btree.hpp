@@ -30,6 +30,51 @@
 #include <condition_variable>
 #include <atomic>
 
+// Define the struct for all thread info, aligned on 64-byte boundary
+struct alignas(64) thread_info {
+    std::thread::id id;
+    void* cur_node;
+    int op; // read, write, or upgrade  
+};
+
+// Define the thread-local variable struct
+struct thread_debug_info {
+    thread_info* tinfo;
+};
+
+// Thread-local storage for each thread's debug information
+thread_local thread_debug_info local_debug_info;
+
+enum lock_type {
+    lock_type_read = 1,
+    lock_type_write,
+    lock_type_upgrade,
+    lock_type_unlock
+};
+
+// Function to convert enum to string
+inline std::string lock_type_to_string(int lt) {
+    switch (lt) {
+        case lock_type_read:
+            return "read";
+        case lock_type_write:
+            return "write";
+        case lock_type_upgrade:
+            return "upgrade";
+        case lock_type_unlock:
+            return "unlock";
+        default:
+            return "unknown_lock_type";
+    }
+}
+// Example function to simulate taking a read lock
+void record_lock(void* node, int lock_type) {
+    if (local_debug_info.tinfo) {
+        local_debug_info.tinfo->cur_node = node;
+        local_debug_info.tinfo->op = lock_type;
+    }
+}
+
 namespace tlx {
 
 //! \addtogroup tlx_container
@@ -229,6 +274,7 @@ public:
 
     //! \}
 private:
+public: // XXX
     struct node;
 
 public:
@@ -248,9 +294,9 @@ public:
         int upgradewaiting = 0;
 
 #ifdef TLX_BTREE_DEBUG
+        BTree *treep;
         std::unordered_set<std::thread::id> curwrite;
         std::unordered_set<std::thread::id> curread;
-        BTree *treep;
         node *nodep;
 
         void addtoread(bool verify) {
@@ -306,6 +352,7 @@ public:
 
        
         void readlock(bool verify = true) {
+            record_lock(nodep, lock_type_read);
             lock_type lock(mutex);
             addtoread(verify);
             if (haswriter) {
@@ -318,6 +365,7 @@ public:
         }
 
         void upgradelock() {
+            record_lock(nodep, lock_type_upgrade);
             lock_type lock(mutex);
             delfromread(false);
             addtowrite(false);
@@ -335,6 +383,7 @@ public:
         }
 
         void writelock(bool verify = true) {
+            record_lock(nodep, lock_type_write);
             lock_type lock(mutex);
             addtowrite(verify);
             if (numreader > 0 || haswriter) {
@@ -350,6 +399,7 @@ public:
         }
 
         void read_unlock(bool verify = true) {
+            record_lock(nodep, lock_type_unlock);
             lock_type lock(mutex);
             delfromread(verify);
             TLX_BTREE_ASSERT(numreader >= 1);
@@ -396,6 +446,7 @@ private:
 
     //! The header structure of each node in-memory. This structure is extended
     //! by InnerNode or LeafNode.
+public: // XXX    
     struct node {
         //! Level in the b-tree, if level == 0 -> leaf node
         unsigned short level;
