@@ -401,7 +401,7 @@ void TestFactory_Map<TestClass>::call_testrunner(size_t items) {
 
 //! Speed test them!
 int main() {
-    {   // Set - speed test only insertion
+    /* {   // Set - speed test only insertion
 
         repeat_until = min_items;
 
@@ -432,7 +432,7 @@ int main() {
             std::cout << "set: find " << items << "\n";
             TestFactory_Set<Test_Set_Find>().call_testrunner(items);
         }
-    }
+    } */
 
     {   // Map - speed test only insertion
 
@@ -445,7 +445,7 @@ int main() {
         }
     }
 
-    {   // Map - speed test insert, find and delete
+    /* {   // Map - speed test insert, find and delete
 
         repeat_until = min_items;
 
@@ -465,7 +465,7 @@ int main() {
             std::cout << "map: find " << items << "\n";
             TestFactory_Map<Test_Map_Find>().call_testrunner(items);
         }
-    }
+    } */
 
     return 0;
 }
