@@ -1903,10 +1903,8 @@ std::vector<thread_info> global_thread_info(NUM_THREADS);
 std::atomic<int> thread_count(0);
 std::map<std::thread::id, int> thread_id_map;
 
-// Signal handler for SIGUSR1
-void signal_handler(int signum) {
-    if (signum == SIGUSR1) {
-        std::cout << "Received SIGUSR1. Current thread states:\n";
+void print_threads_states(void)
+{
         my_multi_thread_set.print(std::cout);
         for (int i = 0; i < NUM_THREADS; ++i) {
             std::cout << "Thread " << i  << " id: " << global_thread_info[i].id
@@ -1928,6 +1926,12 @@ void signal_handler(int signum) {
                 std::cout << std::endl;
             }
         }
+}
+// Signal handler for SIGUSR1
+void signal_handler(int signum) {
+    if (signum == SIGUSR1) {
+        std::cout << "Received SIGUSR1. Current thread states:\n";
+        print_threads_states();
     } else {
         std::cout << "Received signal " << signum << std::endl;
     }
@@ -1938,6 +1942,7 @@ void initialize_thread_info(int index) {
     std::lock_guard<std::mutex> lock(printmtx);
     local_debug_info.tinfo = &global_thread_info[index];
     local_debug_info.tinfo->id = std::this_thread::get_id();
+    local_debug_info.tinfo->threadidx = index;
     local_debug_info.tinfo->cur_node = nullptr;
     local_debug_info.tinfo->op = 0;
     thread_id_map[std::this_thread::get_id()] = index;
@@ -1954,10 +1959,11 @@ void before_assert(void)
     static bool tree_printed = false;
     if (!tree_printed) { // only print once
         tree_printed = true;
-        my_multi_thread_set.print(std::cout);
-        std::cout << std::endl;
+        print_threads_states();
         std::cout << std::endl;
         return;
+    } else {
+        sleep(3600);
     }
 }
 
@@ -1993,7 +1999,8 @@ void thread_func(set_type& my_set, int insert_prob, int lookup_prob, int delete_
         {
             std::lock_guard<std::mutex> lock(truth_source[key].mtx);
             print("find", key, id);
-            bool found = my_set.find(key) != my_set.end();
+            // using exists because this currently doesn't support iterators
+            bool found = my_set.exists(key);
             die_unless(found == truth_source[key].in_set);
         }
         else if (operation < insert_prob + lookup_prob + delete_prob)

@@ -33,6 +33,7 @@
 // Define the struct for all thread info, aligned on 64-byte boundary
 struct alignas(64) thread_info {
     std::thread::id id;
+    int threadidx;
     void* cur_node;
     int op; // read, write, or upgrade  
 };
@@ -67,11 +68,19 @@ inline std::string lock_type_to_string(int lt) {
             return "unknown_lock_type";
     }
 }
+
+extern std::mutex printmtx;
+
 // Example function to simulate taking a read lock
 void record_lock(void* node, int lock_type) {
     if (local_debug_info.tinfo) {
         local_debug_info.tinfo->cur_node = node;
         local_debug_info.tinfo->op = lock_type;
+
+        std::lock_guard<std::mutex> l(printmtx);
+        std::cout << "thread " << 
+                local_debug_info.tinfo->threadidx << " node "
+                << node << " " << lock_type_to_string(lock_type) << std::endl;
     }
 }
 
@@ -461,6 +470,9 @@ public: // XXX
         //! Is changed every time there is a split or rebalance
         //! in order to prevent inserting into the wrong leaf
         int gen = 0;
+
+        // TODO desc
+        
 
         //! Delayed initialisation of constructed node.
         void initialize(const unsigned short l) {
@@ -1796,21 +1808,40 @@ public:
     //! Non-STL function checking whether a key is in the B+ tree. The same as
     //! (find(k) != end()) or (count() != 0).
     bool exists(const key_type& key) const {
-        const node* n = root_.load();
-        if (!n) return false;
+        const node* n;
+        while (true) {
+            if (!root_.load()) return false;
 
+            n = root_.load();
+            n->lock->readlock();
+
+            if (n != root_) {
+                n->lock->read_unlock();
+                continue;
+            } else if (root_.load()->slotuse == 0) {
+                return false;
+            } else {
+                break;
+            }
+        }
+        
         while (!n->is_leafnode())
         {
             const InnerNode* inner = static_cast<const InnerNode*>(n);
             unsigned short slot = find_lower(inner, key);
 
+            inner->childid[slot]->lock->readlock();
+            inner->lock->read_unlock();
             n = inner->childid[slot];
         }
 
         const LeafNode* leaf = static_cast<const LeafNode*>(n);
 
         unsigned short slot = find_lower(leaf, key);
-        return (slot < leaf->slotuse && key_equal(key, leaf->key(slot)));
+
+        bool res = (slot < leaf->slotuse && key_equal(key, leaf->key(slot)));
+        leaf->lock->read_unlock();
+        return res;
     }
 
     //! Tries to locate a key in the B+ tree and returns an iterator to the
@@ -2221,7 +2252,12 @@ private:
                 head_leaf_ = tail_leaf_ = static_cast<LeafNode*>(root_.load());
             }
         } else {
-            root_.load()->lock->readlock();
+            node* oldroot = root_.load(); // TODO reading the root_ without a lock on it?
+            oldroot->lock->readlock();
+            if (oldroot != root_.load()) {
+                oldroot->lock->read_unlock();
+                return insert_res();
+            }
         }
 
         if (root_.load()->is_leafnode())
@@ -2338,14 +2374,7 @@ private:
             else inner->childid[slot]->lock->readlock();
 
             check_split_res res = check_split_child(inner, inner->childid[slot], slot);
-            if (res == retry) {
-                n->lock->read_unlock();
-                if (childisleaf) inner->childid[slot]->lock->write_unlock();
-                else inner->childid[slot]->lock->read_unlock();
-                // don't need to unlock slot + 1 child because check_split_child
-                // won't have gotten there
-                return insert_res();
-            }
+            if (res == retry) return insert_res();
             
             // unlocking the irrelevant child
             if (res == did_split) {
@@ -2413,14 +2442,19 @@ private:
             LeafNode* child = static_cast<LeafNode*>(c);
             if (child->is_full())
             {
-                int prevgen = parent->gen;
+                auto oldgen = std::make_pair(parent->gen, child->gen);
+                child->lock->write_unlock();
                 parent->lock->upgradelock();
+                child->lock->writelock();
                 
-                // no need to unlock because parent and child are 
-                // unlocked in insert_descend
-                if (parent->gen != prevgen) return retry;
-                if (parent->childid[slot] != child) return retry;
-
+                if (std::make_pair(parent->gen, child->gen) != oldgen
+                        || parent->childid[slot] != child
+                        || !child->is_full()) {
+                    parent->lock->write_unlock();
+                    child->lock->write_unlock();
+                    return retry;
+                }
+ 
                 key_type newkey = key_type();
                 node* newleaf = nullptr;
 
@@ -2449,14 +2483,17 @@ private:
             InnerNode* child = static_cast<InnerNode*>(c);
             if (child->is_full()) {
                 auto prevgens = std::make_pair(parent->gen, child->gen);
+                child->lock->read_unlock();
                 parent->lock->upgradelock();
-                child->lock->upgradelock();
+                child->lock->writelock();
 
-                // parent and child are unlocked in insert_descend
-                if (std::make_pair(parent->gen, child->gen) != prevgens)
+               if (std::make_pair(parent->gen, child->gen) != prevgens
+                        || parent->childid[slot] != child
+                        || !child->is_full()) {
+                    parent->lock->write_unlock();
+                    child->lock->write_unlock();
                     return retry;
-                if (parent->childid[slot] != child) return retry;
-                if (!child->is_full()) return retry;
+                }
 
                 key_type newkey = key_type();
                 node* newnode = nullptr;
@@ -2849,79 +2886,89 @@ private:
         if (!root_.load()) return btree_not_found;
 
         node* oldroot = root_;
-        oldroot->lock->readlock();
+        if (oldroot->is_leafnode()) oldroot->lock->writelock();
+        else oldroot->lock->readlock();
+
         if (oldroot != root_) {
-            oldroot->lock->read_unlock();
+            if (oldroot->is_leafnode()) oldroot->lock->write_unlock();
+            else oldroot->lock->read_unlock();
             return restart; // root was changed by other thread
         }
 
-        if (!root_.load()->is_leafnode())
+        if (!root_.load()->is_leafnode() && root_.load()->slotuse <= 1)
         {
-            if (root_.load()->slotuse <= 1)
+            InnerNode* root = static_cast<InnerNode*>(root_.load());
+            TLX_BTREE_ASSERT(root->slotuse == 1);
+            if (root->level == 1)
             {
-                InnerNode* root = static_cast<InnerNode*>(root_.load());
-                TLX_BTREE_ASSERT(root->slotuse == 1);
-                if (root->level == 1)
+                root->childid[0]->lock->readlock();
+                root->childid[1]->lock->readlock();
+                // then these must be leaves
+                LeafNode* leftchild = static_cast<LeafNode*>(root->childid[0]);
+                LeafNode* rightchild = static_cast<LeafNode*>(root->childid[1]);
+                if (leftchild->slotuse + rightchild->slotuse < inner_slotmax)
                 {
-                    root->childid[0]->lock->readlock();
-                    root->childid[1]->lock->readlock();
-                    // then these must be leaves
-                    LeafNode* leftchild = static_cast<LeafNode*>(root->childid[0]);
-                    LeafNode* rightchild = static_cast<LeafNode*>(root->childid[1]);
+                    // case: they can merge
+                    auto oldgen = std::make_tuple(root->gen, leftchild->gen, rightchild->gen);
+                    leftchild->lock->read_unlock();
+                    rightchild->lock->read_unlock();
+                    root->lock->upgradelock();
+                    leftchild->lock->writelock();
+                    rightchild->lock->writelock();
 
-                    if (leftchild->slotuse + rightchild->slotuse < inner_slotmax)
-                    {
-                        // case: they can merge
-                        root->lock->upgradelock();
-                        leftchild->lock->upgradelock();
-                        rightchild->lock->upgradelock();
+                    bool genmatch = (oldgen
+                            == std::make_tuple(root_.load()->gen, leftchild->gen, rightchild->gen));
 
-                        if (root_.load()->slotuse > 1 || root_.load()->is_leafnode()) {
-                            root->lock->write_unlock();
-                            leftchild->lock->write_unlock();
-                            rightchild->lock->write_unlock();
-                            return restart;
-                        }
-
-                        merge_leaves(leftchild, rightchild, root);
-                        free_node(rightchild);
-                        free_node(root);
-                        root_ = leftchild;
-                        leftchild->lock->downgrade_lock();
-                    } else {
-                        leftchild->lock->read_unlock();
-                        rightchild->lock->read_unlock();
+                    if (root_.load()->slotuse > 1 || root_.load()->is_leafnode() || !genmatch) {
+                        root->lock->write_unlock();
+                        leftchild->lock->write_unlock();
+                        rightchild->lock->write_unlock();
+                        return restart;
                     }
+
+                    merge_leaves(leftchild, rightchild, root);
+                    free_node(rightchild);
+                    free_node(root);
+                    root_ = leftchild;
+
+                    leftchild->gen++;
                 } else {
-                    root->childid[0]->lock->readlock();
-                    root->childid[1]->lock->readlock();
+                    leftchild->lock->read_unlock();
+                    rightchild->lock->read_unlock();
+                }
+            } else {
+                root->childid[0]->lock->readlock();
+                root->childid[1]->lock->readlock();
+                InnerNode* leftchild = static_cast<InnerNode*>(root->childid[0]);
+                InnerNode* rightchild = static_cast<InnerNode*>(root->childid[1]);
+                if (leftchild->slotuse + rightchild->slotuse < inner_slotmax)
+                {
+                    // case: they can merge
+                    auto oldgen = std::make_tuple(root->gen, leftchild->gen, rightchild->gen);
+                    leftchild->lock->read_unlock();
+                    rightchild->lock->read_unlock();
+                    root->lock->upgradelock();
+                    leftchild->lock->writelock();
+                    rightchild->lock->writelock();
 
-                    InnerNode* leftchild = static_cast<InnerNode*>(root->childid[0]);
-                    InnerNode* rightchild = static_cast<InnerNode*>(root->childid[1]);
+                    bool genmatch = (oldgen
+                            == std::make_tuple(root_.load()->gen, leftchild->gen, rightchild->gen));
 
-                    if (leftchild->slotuse + rightchild->slotuse < inner_slotmax)
-                    {
-                        // case: they can merge
-                        root->lock->upgradelock();
-                        leftchild->lock->upgradelock();
-                        rightchild->lock->upgradelock();
-
-                        if (root_.load()->slotuse > 1 || root_.load()->is_leafnode()) {
-                            root->lock->write_unlock();
-                            leftchild->lock->write_unlock();
-                            rightchild->lock->write_unlock();
-                            return restart;
-                        }
-
-                        merge_inner(leftchild, rightchild, root, 0);
-                        free_node(rightchild);
-                        free_node(root);
-                        root_ = leftchild;
-                        leftchild->lock->downgrade_lock();
-                    } else {
-                        leftchild->lock->read_unlock();
-                        rightchild->lock->read_unlock();
+                    if (root_.load()->slotuse > 1 || root_.load()->is_leafnode() || !genmatch) {
+                        root->lock->write_unlock();
+                        leftchild->lock->write_unlock();
+                        rightchild->lock->write_unlock();
+                        return restart;
                     }
+                    merge_inner(leftchild, rightchild, root, 0);
+                    free_node(rightchild);
+                    free_node(root);
+                    root_ = leftchild;
+                    
+                    leftchild->gen++;
+                } else {
+                    leftchild->lock->read_unlock();
+                    rightchild->lock->read_unlock();
                 }
             }
         }
@@ -2957,13 +3004,13 @@ private:
     result_flags_t erase_one_descend(const key_type& key, node* curr) {
         TLX_BTREE_PRINT("erase one descend(" << key << "," << curr << 
                 ") on btree size " << size());
-        
-        TLX_BTREE_ASSERT(curr->lock->readlocked());
 
         //if (self_verify) verify();
 
         if (curr->is_leafnode())
         {
+            TLX_BTREE_ASSERT(curr->lock->writelocked());
+
             LeafNode* leaf = static_cast<LeafNode*>(curr);
 
             TLX_BTREE_PRINT("erase one descend LeafNode" << leaf);
@@ -2974,19 +3021,12 @@ private:
             {
                 TLX_BTREE_PRINT("Could not find key " << key << " to erase.");
 
-                leaf->lock->read_unlock();
+                leaf->lock->write_unlock();
                 return btree_not_found;
             }
 
             TLX_BTREE_PRINT(
                 "Found key in leaf " << curr << " at slot " << slot);
-
-            leaf->lock->upgradelock();
-            if (slot >= leaf->slotuse || !key_equal(key, leaf->key(slot)))
-            {
-                leaf->lock->write_unlock();
-                return restart;
-            }
 
             std::copy(leaf->slotdata + slot + 1, leaf->slotdata + leaf->slotuse,
                       leaf->slotdata + slot);
@@ -2998,6 +3038,8 @@ private:
         }
         else // !curr->is_leafnode()
         {
+            TLX_BTREE_ASSERT(curr->lock->readlocked());
+
             InnerNode* parent = static_cast<InnerNode*>(curr);
             TLX_BTREE_PRINT("erase one descend InnerNode" << parent);
             unsigned short slot = find_lower(parent, key);
@@ -3013,8 +3055,8 @@ private:
             {
                 TLX_BTREE_PRINT("erase one descend: leafnode children");
                 
-                parent->childid[fake_slot]->lock->readlock();
-                parent->childid[fake_slot + 1]->lock->readlock();
+                parent->childid[fake_slot]->lock->writelock();
+                parent->childid[fake_slot + 1]->lock->writelock();
                 // children are leaf nodes
                 LeafNode* leftchild = static_cast<LeafNode*>
                         (parent->childid[fake_slot]);
@@ -3026,11 +3068,18 @@ private:
 
                // it's totally fine for both to be few
                 if (leftchild->is_underflow() || rightchild->is_underflow()) {
-                    parent->lock->upgradelock();
-                    leftchild->lock->upgradelock();
-                    rightchild->lock->upgradelock();
 
-                    if ( !(leftchild->is_underflow() || rightchild->is_underflow()) ) {
+                    auto oldgen = std::make_tuple(parent->gen, leftchild->gen, rightchild->gen);
+                    leftchild->lock->write_unlock();
+                    rightchild->lock->write_unlock();
+                    parent->lock->upgradelock();
+                    leftchild->lock->writelock();
+                    rightchild->lock->writelock();
+
+                    bool genmatch = (oldgen
+                            == std::make_tuple(parent->gen, leftchild->gen, rightchild->gen));
+
+                    if (!genmatch || !(leftchild->is_underflow() || rightchild->is_underflow()) ) {
                         parent->lock->write_unlock();
                         leftchild->lock->write_unlock();
                         rightchild->lock->write_unlock();
@@ -3056,11 +3105,11 @@ private:
                     TLX_BTREE_ASSERT(find_lower(parent, key) == slot);
                 }
 
-                leftchild->lock->read_unlock();
+                leftchild->lock->write_unlock();
                 if (rightchild != nullptr)
-                        rightchild->lock->read_unlock();
+                        rightchild->lock->write_unlock();
 
-                parent->childid[slot]->lock->readlock();
+                parent->childid[slot]->lock->writelock();
             }
             else
             {
@@ -3079,11 +3128,18 @@ private:
 
                 // it's totally fine for both to be few
                 if (leftchild->is_underflow() || rightchild->is_underflow()) {
-                    parent->lock->upgradelock();
-                    leftchild->lock->upgradelock();
-                    rightchild->lock->upgradelock();
 
-                    if ( !(leftchild->is_underflow() || rightchild->is_underflow()) ) {
+                    auto oldgen = std::make_tuple(parent->gen, leftchild->gen, rightchild->gen);
+                    leftchild->lock->write_unlock();
+                    rightchild->lock->write_unlock();
+                    parent->lock->upgradelock();
+                    leftchild->lock->writelock();
+                    rightchild->lock->writelock();
+
+                    bool genmatch = (oldgen
+                            == std::make_tuple(parent->gen, leftchild->gen, rightchild->gen));
+
+                    if (!genmatch || !(leftchild->is_underflow() || rightchild->is_underflow()) ) {
                         parent->lock->write_unlock();
                         leftchild->lock->write_unlock();
                         rightchild->lock->write_unlock();
@@ -3196,9 +3252,6 @@ private:
         }
 
         parent->lock->downgrade_lock();
-        leftchild->lock->downgrade_lock();
-        if (*rightchildp != nullptr)
-            rightchild->lock->downgrade_lock();
     }
 
     // Redistributes/merges the keys of two adjacent inner children of the parent.
