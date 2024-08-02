@@ -445,6 +445,13 @@ public:
             readcv.notify_all();
             DBGPRT();
         }
+
+        int total_users() {
+            int i = numreader + writerswaiting + readerswaiting
+                    + upgradewaiting;
+            
+            return i + (haswriter ? 1 : 0);
+        }
     };
 
     //! \}
@@ -472,7 +479,7 @@ public: // XXX
         int gen = 0;
 
         // TODO desc
-        
+        bool willfree = false;
 
         //! Delayed initialisation of constructed node.
         void initialize(const unsigned short l) {
@@ -1814,8 +1821,19 @@ public:
 
             n = root_.load();
             n->lock->readlock();
+            if (n->willfree) {
+                TLX_BTREE_ASSERT(n != root_.load());
 
-            if (n != root_) {
+                if (n->lock->total_users() <= 1) {
+                    free_node(n);
+                    continue;
+                } else {
+                    n->lock->read_unlock();
+                    continue;
+                }
+            }
+
+            if (n != root_.load()) {
                 n->lock->read_unlock();
                 continue;
             } else if (root_.load()->slotuse == 0) {
