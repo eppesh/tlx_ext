@@ -99,12 +99,17 @@ int main() {
     std::string filename = "/tmp/trace/fiu/FIU_iodedup_mail10.csv";
     std::cout << "Start multi-threaded test ..." << std::endl;
     std::cout << "Trace: " << filename << std::endl;
-    std::vector<uint64_t> data = ReadDataFromFile<uint64_t>(filename);
+    // std::vector<uint64_t> data = ReadDataFromFile<uint64_t>(filename);
+    std::vector<uint64_t> data;
+    for (int i = 1; i <= 120; ++i) {
+        data.push_back(i);
+    }
+
     if (data.empty()) {
         std::cerr << "data is empty" << std::endl;
         return 0;
     }
-    std::vector<int> thread_counts = {1};  // 1, 2, 4, 8
+    std::vector<int> thread_counts = {2};  // 1, 2, 4, 8
     for (int num_threads : thread_counts) {
         std::cout << "Number of threads: " << num_threads << std::endl;
         TlxBTreeTest<uint64_t> test(data, num_threads);

@@ -16,19 +16,22 @@
 // *** Required Headers from the STL
 
 #include <algorithm>
+#include <atomic>
 #include <cassert>
+#include <condition_variable>
 #include <cstddef>
 #include <functional>
+#include <iostream>
 #include <istream>
 #include <memory>
-#include <ostream>
-#include <utility>
-#include <iostream>
-#include <unordered_set>
-#include <thread>
 #include <mutex>
-#include <condition_variable>
-#include <atomic>
+#include <ostream>
+#include <sstream>
+#include <thread>
+#include <unordered_set>
+#include <utility>
+
+#include "logger.h"
 
 namespace tlx {
 
@@ -249,24 +252,62 @@ public:
 
         void addtoread() {
             std::thread::id cur = std::this_thread::get_id();
+            size_t i = 0;
+            for (auto it : curread) {
+                i++;
+                std::stringstream ss;
+                ss << it;
+                std::string idstr = ss.str();
+                INFO("[add_read] size: %u / %ld, inside_id=%s", i,
+                     curread.size(), idstr.c_str());
+            }
+            std::cout << std::endl;
             TLX_BTREE_ASSERT(!curread.contains(cur));
             curread.insert(cur);
         }
 
         void delfromread() {
             std::thread::id cur = std::this_thread::get_id();
+            size_t i = 0;
+            for (auto it : curread) {
+                i++;
+                std::stringstream ss;
+                ss << it;
+                std::string idstr = ss.str();
+                INFO("[del-read] size: %u / %ld, inside_id=%s", i,
+                     curread.size(), idstr.c_str());
+            }
+            std::cout << std::endl;
             TLX_BTREE_ASSERT(curread.contains(cur));
             curread.erase(cur);
         }
 
         void addtowrite() {
             std::thread::id cur = std::this_thread::get_id();
+            size_t i = 0;
+            for (auto it : curread) {
+                i++;
+                std::stringstream ss;
+                ss << it;
+                std::string idstr = ss.str();
+                INFO("[add-write] size: %u / %ld, inside_id=%s", i,
+                     curread.size(), idstr.c_str());
+            }
             TLX_BTREE_ASSERT(!curwrite.contains(cur));
             curwrite.insert(cur);
         }
 
         void delfromwrite() {
             std::thread::id cur = std::this_thread::get_id();
+            size_t i = 0;
+            for (auto it : curread) {
+                i++;
+                std::stringstream ss;
+                ss << it;
+                std::string idstr = ss.str();
+                INFO("[del-write] size: %u / %ld, inside_id=%s", i,
+                     curread.size(), idstr.c_str());
+            }
             TLX_BTREE_ASSERT(curwrite.contains(cur));
             curwrite.erase(cur);
         }
@@ -279,11 +320,16 @@ public:
             return curwrite.contains(std::this_thread::get_id());
         }
 
-#define DBGPRT() \
-        if (/*nodep->is_leafnode()*/ false) { \
-            std::cout << __func__ << " " << seq++ << ": node=" << nodep << " "; \
-            print_node(std::cout, nodep); \
-        }
+#define DBGPRT()                                                  \
+    if (/*nodep->is_leafnode()*/ true) {                          \
+        std::cout << __func__ << " " << ": node=" << nodep << " " \
+                  << ";id=" << std::this_thread::get_id() << ";"; \
+        std::stringstream ss;                                     \
+        ss << std::this_thread::get_id();                         \
+        std::string idstr = ss.str();                             \
+        INFO("[lock] node=%x, id=%s", nodep, idstr.c_str());      \
+        print_node(std::cout, nodep);                             \
+    }
 
 #else
         void addtoread() {}
@@ -2248,7 +2294,15 @@ private:
     */
     insert_res insert_descend(
         node* n, const key_type& key, const value_type& value) {
-        
+        /* std::cout << "[insert_descend] n=" << n << "; key=" << key
+                  << "; thread_id=" << std::this_thread::get_id() << std::endl;
+         */
+        std::stringstream ss;
+        ss << std::this_thread::get_id();
+        std::string idstr = ss.str();
+        INFO("[InsD] [Intent to insert] key=%llu, node=%x, id=%s", key, n,
+             idstr.c_str());
+
         TLX_BTREE_ASSERT(n->lock->readlocked());
         
         if (!n->is_leafnode())
@@ -2259,6 +2313,8 @@ private:
             inner->childid[slot]->lock->readlock();
             check_split_res res = check_split_child(inner, inner->childid[slot], slot);
             if (res == retry) {
+                // TODO: both inner and inner->childid[slot] need to
+                // downgrade_lock first then read_unlock
                 n->lock->read_unlock();
                 inner->childid[slot]->lock->read_unlock();
                 // don't need to unlock slot + 1 child because check_split_child
@@ -2269,7 +2325,12 @@ private:
             // unlocking the irrelevant child
             if (res == did_split) {
                 // if the key ended up moving
-                if (key_less(inner->key(slot), key)){
+                if (key_less(inner->key(slot),
+                             key)) {  // if key is in new leaf, unlock
+                                      // inner->childid[slot], update slot to
+                                      // slot+1 to the new leaf
+                                      // if key is in old leaf, unlock the new
+                                      // leaf node
                     inner->childid[slot]->lock->read_unlock();
                     slot++;
                 } else {
@@ -2301,13 +2362,22 @@ private:
                 return insert_res(iterator(leaf, slot), false);
             }
 
+            /* std::cout << "[debug] slot=" << slot << "; leaf=" << leaf
+                      << "; key=" << key
+                      << "; id=" << std::this_thread::get_id() << std::endl; */
+            std::stringstream ss;
+            ss << std::this_thread::get_id();
+            std::string idstr = ss.str();
+            INFO("[InsD] [Before upgrade] slot=%d, leaf=%x, key=%llu, id=%s",
+                 slot, leaf, key, idstr.c_str());
             // move items and put data item into correct data slot
             TLX_BTREE_ASSERT(slot >= 0 && slot <= leaf->slotuse);
             // leaf will not overflow
             TLX_BTREE_ASSERT(leaf->slotuse + 1 <= leaf_slotmax);
 
             leaf->lock->upgradelock();
-            if (slot < 0 || slot > leaf->slotuse) {
+            // TODO: need to recalculate the slot after being woken up
+            if (slot > leaf->slotuse || leaf->slotuse + 1 > leaf_slotmax) {
                 leaf->lock->write_unlock();
                 return insert_res();
             }
@@ -2318,6 +2388,12 @@ private:
 
             leaf->slotdata[slot] = value;
             leaf->slotuse++;
+            std::cout << "[Insert Descend] key=" << key
+                      << " is inserted! by id=" << idstr << std::endl;
+            INFO(
+                "[InsD] [After insert] slot=%d, leaf=%x, key=%llu, id=%s, "
+                "slotuse=%u",
+                slot, leaf, key, idstr.c_str(), leaf->slotuse);
 
             insert_res ret_val = insert_res(iterator(leaf, slot), true);
             leaf->lock->write_unlock();
@@ -3905,16 +3981,16 @@ private:
                            unsigned int depth = 0, bool recursive = false) {
         for (unsigned int i = 0; i < depth; i++) os << "  ";
 
-        os << "node " << node << " level " << node->level <<
-            " slotuse " << node->slotuse << std::endl;
+        os << "node:[" << node << "; level " << node->level << "; slotuse "
+           << node->slotuse << "]" << std::endl;
 
         if (node->is_leafnode())
         {
             const LeafNode* leafnode = static_cast<const LeafNode*>(node);
 
             for (unsigned int i = 0; i < depth; i++) os << "  ";
-            os << "  leaf prev " << leafnode->prev_leaf <<
-                " next " << leafnode->next_leaf << std::endl;
+            os << "leaf: prev " << leafnode->prev_leaf << " next "
+               << leafnode->next_leaf << std::endl;
 
             for (unsigned int i = 0; i < depth; i++) os << "  ";
 
@@ -3922,7 +3998,7 @@ private:
             {
                 // os << leafnode->key(slot) << " "
                 //    << "(data: " << leafnode->slotdata[slot] << ") ";
-                os << leafnode->key(slot) << "  ";
+                os << std::dec << leafnode->key(slot) << "  ";
             }
             os << std::endl;
         }
@@ -3931,6 +4007,12 @@ private:
             const InnerNode* innernode = static_cast<const InnerNode*>(node);
 
             for (unsigned int i = 0; i < depth; i++) os << "  ";
+
+            os << "inner: ";
+            for (unsigned int slot = 0; slot < innernode->slotuse; ++slot) {
+                os << std::dec << innernode->slotkey[slot] << " ";
+            }
+            os << std::endl;
 
             for (unsigned short slot = 0; slot < innernode->slotuse; ++slot)
             {
