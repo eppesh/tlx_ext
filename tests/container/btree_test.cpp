@@ -156,7 +156,7 @@ template <int Slots>
 struct SimpleTest {
     template <typename KeyType>
     struct traits_nodebug : tlx::btree_default_traits<KeyType, KeyType> {
-        static const bool self_verify = false;
+        static const bool self_verify = true;
         static const bool debug = false;
 
         static const int leaf_slots = Slots;
@@ -2000,7 +2000,7 @@ std::atomic<int> thread_count(0);
 std::map<std::thread::id, int> thread_id_map;
 
 void record_lock(void* node, int lock_type) {
-    if (local_debug_info.tinfo) {
+    if (cur_numthreads > 1 && local_debug_info.tinfo) {
         local_debug_info.tinfo->cur_node = node;
         local_debug_info.tinfo->op = lock_type;
 

@@ -91,6 +91,8 @@ extern std::mutex printmtx;
 
 extern void record_lock(void* node, int lock_type);
 
+extern int cur_numthreads;
+
 namespace tlx {
 
 //! \addtogroup tlx_container
@@ -1562,9 +1564,12 @@ private:
         n->initialize();
         stats_.leaves++;
         std::lock_guard<std::mutex> printlock(printmtx);
-        std::cout << format_current_time() << " alloc leaf " << n
+
+        if (cur_numthreads > 1) {
+            std::cout << format_current_time() << " alloc leaf " << n
                   << " #inner=" << stats_.inner_nodes
                   << " #leaves=" << stats_.leaves << std::endl;
+        }
         return n;
     }
 
@@ -1574,9 +1579,11 @@ private:
         n->initialize(level);
         stats_.inner_nodes++;
         std::lock_guard<std::mutex> printlock(printmtx);
-        std::cout << format_current_time() << " alloc inner " << n
+        if (cur_numthreads > 1) {
+            std::cout << format_current_time() << " alloc inner " << n
                   << " #inner=" << stats_.inner_nodes
                   << " #leaves=" << stats_.leaves << std::endl;
+        }
         return n;
     }
 
@@ -1855,7 +1862,7 @@ public:
             if (n->willfree) {
                 TLX_BTREE_ASSERT(n != root_.load());
 
-                bool islast = n->lock->read_unlock();
+                bool islast = n->lock->read_unlock(false);
 
                 if (islast) {
                     free_node(n);
@@ -1863,7 +1870,7 @@ public:
             }
 
             if (n != root_.load()) {
-                n->lock->read_unlock();
+                n->lock->read_unlock(false);
                 continue;
             } else if (root_.load()->slotuse == 0) {
                 return false;
@@ -1900,7 +1907,7 @@ public:
 
             n->lock->readlock();
             if (n != root_) {
-                n->lock->read_unlock();
+                n->lock->read_unlock(false);
                 continue;
             }
 
@@ -2313,13 +2320,13 @@ private:
             oldroot->lock->readlock();
             if (oldroot->willfree) {
                 TLX_BTREE_ASSERT(oldroot != root_.load());
-                bool islast = oldroot->lock->read_unlock();
+                bool islast = oldroot->lock->read_unlock(false);
                 if (islast) free_node(oldroot);
                 return insert_res();
             }
 
             if (oldroot != root_.load()) {
-                oldroot->lock->read_unlock();
+                oldroot->lock->read_unlock(false);
                 return insert_res();
             }
         }
@@ -2340,7 +2347,7 @@ private:
                 }
 
                 if (root != root_.load() || oldgen != root->gen) {
-                    root->lock->write_unlock();
+                    root->lock->write_unlock(false);
                     return insert_res();
                 }
             }
@@ -2386,7 +2393,7 @@ private:
                 }
 
                 if (root != root_ || root->gen != oldgen || !root->is_full()) {
-                    root->lock->write_unlock();
+                    root->lock->write_unlock(false);
                     return insert_res();
                 }
 
@@ -2984,8 +2991,8 @@ private:
         if (oldroot->willfree) {
             TLX_BTREE_ASSERT(oldroot != root_.load());
             bool islast;
-            if (oldroot->is_leafnode()) islast = oldroot->lock->write_unlock();
-            else islast = oldroot->lock->read_unlock();
+            if (oldroot->is_leafnode()) islast = oldroot->lock->write_unlock(false);
+            else islast = oldroot->lock->read_unlock(false);
 
             if (islast) free_node(oldroot);
             return restart;
@@ -2993,7 +3000,7 @@ private:
 
         if (oldroot != root_) {
             if (oldroot->is_leafnode()) oldroot->lock->write_unlock();
-            else oldroot->lock->read_unlock();
+            else oldroot->lock->read_unlock(false);
             return restart; // root was changed by other thread
         }
 
@@ -3035,6 +3042,7 @@ private:
                     }
 
                     merge_leaves(leftchild, rightchild, root);
+                    free_node(rightchild);
 
                     root->willfree = true;
                     bool islast = root->lock->write_unlock();
@@ -3088,7 +3096,7 @@ private:
 
                     leftchild->gen++;
 
-                    root_->lock->downgrade_lock();
+                    root_.load()->lock->downgrade_lock();
                 } else {
                     leftchild->lock->read_unlock();
                     rightchild->lock->read_unlock();
@@ -3236,7 +3244,7 @@ private:
 
                 leftchild->lock->write_unlock();
                 if (rightchild != nullptr)
-                        rightchild->lock->write_unlock();
+                    rightchild->lock->write_unlock();
 
                 parent->childid[slot]->lock->writelock();
             }
