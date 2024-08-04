@@ -30,7 +30,10 @@
 #include <string>
 #include <utility>
 #include <map>
-
+#include <execinfo.h>
+#include <cxxabi.h>
+#include <sstream>
+#include <stack>
 
 #if TLX_MORE_TESTS
 static const bool tlx_more_tests = true;
@@ -42,6 +45,97 @@ static const bool test_multi = false;
 static const bool multithread = true;
 static const auto seed = std::random_device{}();
 
+std::string format_current_time() {
+    // Get the current time from system_clock
+    auto now = std::chrono::system_clock::now();
+
+    // Convert to time_t to get calendar time
+    std::time_t time_t_now = std::chrono::system_clock::to_time_t(now);
+
+    // Convert time_t to tm for formatting
+    std::tm tm_now = *std::localtime(&time_t_now);
+
+    // Get the duration since the epoch
+    auto duration_since_epoch = now.time_since_epoch();
+
+    // Extract seconds and nanoseconds from the duration
+    auto seconds = std::chrono::duration_cast<std::chrono::seconds>(duration_since_epoch);
+    auto microseconds = std::chrono::duration_cast<std::chrono::microseconds>(duration_since_epoch) - seconds;
+
+    // Format the output string
+    std::stringstream ss;
+    ss << std::put_time(&tm_now, "%Y-%m-%d %H:%M:%S");
+    ss << '.' << std::setw(6) << std::setfill('0') << microseconds.count();
+
+    return ss.str();
+}
+
+void split_sym(char *input, std::vector<std::string> *resultp) {
+   std::istringstream iss(input);
+   std::string word;
+
+   auto& result = *resultp;
+   result.clear();
+
+   // Use a loop to split the string by spaces
+   while (iss >> word) {
+      result.push_back(word);
+   }
+}
+
+std::string remove_text_between_brackets(const std::string& input) {
+    std::string result;
+    std::stack<char> bracket_stack;
+    bool remove_text = false;
+
+    for (char ch : input) {
+        if (ch == '(' || ch == '[' || ch == '{' || ch == '<') {
+            bracket_stack.push(ch);
+            remove_text = true;
+        } else if ((ch == ')' && !bracket_stack.empty() && bracket_stack.top() == '(') ||
+                   (ch == ']' && !bracket_stack.empty() && bracket_stack.top() == '[') ||
+                   (ch == '}' && !bracket_stack.empty() && bracket_stack.top() == '{') ||
+                   (ch == '>' && !bracket_stack.empty() && bracket_stack.top() == '<')) {
+            bracket_stack.pop();
+            if (bracket_stack.empty()) {
+                remove_text = false;
+            }
+        } else if (!remove_text) {
+            result += ch;
+        }
+    }
+
+    return result;
+}
+
+// Function to extract the last word from a string
+std::string extract_func_name(const std::string& input) {
+    auto clean_input = remove_text_between_brackets(input);
+    ssize_t pos = clean_input.find_last_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_");
+    auto res = clean_input.substr(pos + 1);
+    return res;
+}
+
+std::string stack_sym(int start_stack, int num_stacks) {
+    const int NUM = 10;
+    void * addrs[NUM];
+    int num_frames = backtrace(addrs, NUM);
+    char **strs = backtrace_symbols(addrs, num_frames);
+    int status;
+    std::vector<std::string> names;
+    std::string s = "";
+
+    for (int i = start_stack; i < std::min(start_stack + num_stacks, num_frames); ++i) {
+        split_sym(strs[i], &names);
+        char *demangled_name = abi::__cxa_demangle(names[3].c_str(), 0, 0, &status);
+        std::string func_name = extract_func_name(demangled_name);
+        std::stringstream stream;
+        stream << func_name << '(' << std::hex << addrs[i] << ") ";
+        s += stream.str();
+        free(demangled_name);
+    }
+    return s;
+}
 
 namespace tlx{
 int seq = 0; // TODO
@@ -1897,35 +1991,57 @@ int seqnum = 0;
 set_type my_multi_thread_set;
 
 const int NUM_THREADS = 16;
+int cur_numthreads = 1;
+const int thread_start_idx = 2;
 
 // Global array of thread information
 std::vector<thread_info> global_thread_info(NUM_THREADS);
 std::atomic<int> thread_count(0);
 std::map<std::thread::id, int> thread_id_map;
 
+void record_lock(void* node, int lock_type) {
+    if (local_debug_info.tinfo) {
+        local_debug_info.tinfo->cur_node = node;
+        local_debug_info.tinfo->op = lock_type;
+
+        std::lock_guard<std::mutex> l(printmtx);
+        set_type::btree_impl::node *nodep = static_cast<set_type::btree_impl::node *>(node);
+        std::cout << format_current_time() << " thread " <<
+          local_debug_info.tinfo->threadidx << " node "
+                  << node << " (r" << nodep->lock->numreader
+                  << "|w" << nodep->lock->haswriter
+                  << " waiter:r" << nodep->lock->readerswaiting
+                  << "|w" << nodep->lock->writerswaiting
+                  << "|u" << nodep->lock->upgradewaiting
+                  << ") "
+                  << lock_type_to_string(lock_type)
+                << " " << stack_sym() << std::endl;
+    }
+}
+
 void print_threads_states(void)
 {
-        my_multi_thread_set.print(std::cout);
-        for (int i = 0; i < NUM_THREADS; ++i) {
-            std::cout << "Thread " << i  << " id: " << global_thread_info[i].id
-                << " - Node: " << global_thread_info[i].cur_node
-                << ", Operation: " << lock_type_to_string(global_thread_info[i].op)
-                << std::endl;
-            if (global_thread_info[i].cur_node) {
-                set_type::btree_impl::node *nodep = static_cast<set_type::btree_impl::node *>(global_thread_info[i].cur_node);
-                auto lock = nodep->lock;
-                std::cout << "  curread: ";
-                for (auto id: lock->curread) {
-                    std::cout << thread_id_map[id] << ' ';
-                }
-                std::cout << std::endl;
-                std::cout << "  curwrite: ";
-                for (auto id: lock->curwrite) {
-                    std::cout << thread_id_map[id] << ' ';
-                }
-                std::cout << std::endl;
+    my_multi_thread_set.print(std::cout);
+    for (int i = 0; i < cur_numthreads; ++i) {
+        std::cout << "Thread " << i + thread_start_idx << " id: " << global_thread_info[i].id
+            << " - Node: " << global_thread_info[i].cur_node
+            << ", Operation: " << lock_type_to_string(global_thread_info[i].op)
+            << std::endl;
+        if (global_thread_info[i].cur_node) {
+            set_type::btree_impl::node *nodep = static_cast<set_type::btree_impl::node *>(global_thread_info[i].cur_node);
+            auto lock = nodep->lock;
+            std::cout << "  curread: ";
+            for (auto id: lock->curread) {
+                std::cout << thread_id_map[id] << ' ';
             }
+            std::cout << std::endl;
+            std::cout << "  curwrite: ";
+            for (auto id: lock->curwrite) {
+                std::cout << thread_id_map[id] << ' ';
+            }
+            std::cout << std::endl;
         }
+    }
 }
 // Signal handler for SIGUSR1
 void signal_handler(int signum) {
@@ -1942,10 +2058,10 @@ void initialize_thread_info(int index) {
     std::lock_guard<std::mutex> lock(printmtx);
     local_debug_info.tinfo = &global_thread_info[index];
     local_debug_info.tinfo->id = std::this_thread::get_id();
-    local_debug_info.tinfo->threadidx = index;
+    local_debug_info.tinfo->threadidx = index + thread_start_idx;
     local_debug_info.tinfo->cur_node = nullptr;
     local_debug_info.tinfo->op = 0;
-    thread_id_map[std::this_thread::get_id()] = index;
+    thread_id_map[std::this_thread::get_id()] = index + thread_start_idx;
 }
 
 // Function to cleanup thread debug info
@@ -1959,6 +2075,8 @@ void before_assert(void)
     static bool tree_printed = false;
     if (!tree_printed) { // only print once
         tree_printed = true;
+        std::lock_guard<std::mutex> l(printmtx);
+        std::cout << "======= print thread state before assert =======\n";
         print_threads_states();
         std::cout << std::endl;
         return;
@@ -1968,10 +2086,9 @@ void before_assert(void)
 }
 
 void print(const char* op, int val, int id) {
-    printmtx.lock();
+    std::lock_guard<std::mutex> l(printmtx);
     std::cout << seqnum++ << ": thread " << id << " doing " << op
         << " value: " << val << std::endl;
-    printmtx.unlock();
 }
 
 void thread_func(set_type& my_set, int insert_prob, int lookup_prob, int delete_prob, int id) {
@@ -2026,13 +2143,17 @@ void test_multithread() {
     // Register signal handler for SIGUSR1
     std::signal(SIGUSR1, signal_handler);
 
-    std::vector<std::thread> threads;
-    for (int i = 0; i < NUM_THREADS; ++i) {
-        threads.emplace_back(thread_func, std::ref(my_multi_thread_set), insert_prob, lookup_prob, delete_prob, i);
-    }
+    while (cur_numthreads <= NUM_THREADS) {
+        std::vector<std::thread> threads;
+        for (int i = 0; i < cur_numthreads; ++i) {
+            threads.emplace_back(thread_func, std::ref(my_multi_thread_set), insert_prob, lookup_prob, delete_prob, i);
+        }
 
-    for (auto& th : threads) {
-        th.join();
+        for (auto& th : threads) {
+            th.join();
+        }
+
+        cur_numthreads++;
     }
 }
 
