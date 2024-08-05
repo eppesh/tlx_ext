@@ -158,6 +158,7 @@ static PosixLogger* logger_ = NewLogger("log.log");
         Log(logger_, "%s", buffer);                                    \
     } while (0);
 
+#define NDEBUG
 #ifndef NDEBUG
 #define DEBUG(M, ...)                                                  \
     do {                                                               \

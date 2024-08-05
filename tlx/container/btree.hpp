@@ -258,8 +258,8 @@ public:
                 std::stringstream ss;
                 ss << it;
                 std::string idstr = ss.str();
-                INFO("[add_read] size: %u / %ld, inside_id=%s", i,
-                     curread.size(), idstr.c_str());
+                DEBUG("[add_read] size: %u / %ld, inside_id=%s", i,
+                      curread.size(), idstr.c_str());
             }
             std::cout << std::endl;
             TLX_BTREE_ASSERT(!curread.contains(cur));
@@ -274,8 +274,8 @@ public:
                 std::stringstream ss;
                 ss << it;
                 std::string idstr = ss.str();
-                INFO("[del-read] size: %u / %ld, inside_id=%s", i,
-                     curread.size(), idstr.c_str());
+                DEBUG("[del-read] size: %u / %ld, inside_id=%s", i,
+                      curread.size(), idstr.c_str());
             }
             std::cout << std::endl;
             TLX_BTREE_ASSERT(curread.contains(cur));
@@ -290,8 +290,8 @@ public:
                 std::stringstream ss;
                 ss << it;
                 std::string idstr = ss.str();
-                INFO("[add-write] size: %u / %ld, inside_id=%s", i,
-                     curread.size(), idstr.c_str());
+                DEBUG("[add-write] size: %u / %ld, inside_id=%s", i,
+                      curread.size(), idstr.c_str());
             }
             TLX_BTREE_ASSERT(!curwrite.contains(cur));
             curwrite.insert(cur);
@@ -305,8 +305,8 @@ public:
                 std::stringstream ss;
                 ss << it;
                 std::string idstr = ss.str();
-                INFO("[del-write] size: %u / %ld, inside_id=%s", i,
-                     curread.size(), idstr.c_str());
+                DEBUG("[del-write] size: %u / %ld, inside_id=%s", i,
+                      curread.size(), idstr.c_str());
             }
             TLX_BTREE_ASSERT(curwrite.contains(cur));
             curwrite.erase(cur);
@@ -327,7 +327,7 @@ public:
         std::stringstream ss;                                     \
         ss << std::this_thread::get_id();                         \
         std::string idstr = ss.str();                             \
-        INFO("[lock] node=%x, id=%s", nodep, idstr.c_str());      \
+        DEBUG("[lock] node=%x, id=%s", nodep, idstr.c_str());     \
         print_node(std::cout, nodep);                             \
     }
 
@@ -2292,26 +2292,23 @@ private:
      * slot. If the node overflows, then it must be split and the new split node
      * inserted into the parent. Unroll / this splitting up to the root.
     */
-    insert_res insert_descend(
-        node* n, const key_type& key, const value_type& value) {
-        /* std::cout << "[insert_descend] n=" << n << "; key=" << key
-                  << "; thread_id=" << std::this_thread::get_id() << std::endl;
-         */
+    insert_res insert_descend(node* n, const key_type& key,
+                              const value_type& value) {
         std::stringstream ss;
         ss << std::this_thread::get_id();
         std::string idstr = ss.str();
-        INFO("[InsD] [Intent to insert] key=%llu, node=%x, id=%s", key, n,
-             idstr.c_str());
+        DEBUG("[InsD] [Intent to insert] key=%llu, node=%x, id=%s", key, n,
+              idstr.c_str());
 
         TLX_BTREE_ASSERT(n->lock->readlocked());
-        
-        if (!n->is_leafnode())
-        {
+
+        if (!n->is_leafnode()) {
             InnerNode* inner = static_cast<InnerNode*>(n);
             unsigned short slot = find_lower(inner, key);
 
             inner->childid[slot]->lock->readlock();
-            check_split_res res = check_split_child(inner, inner->childid[slot], slot);
+            check_split_res res =
+                check_split_child(inner, inner->childid[slot], slot);
             if (res == retry) {
                 // TODO: both inner and inner->childid[slot] need to
                 // downgrade_lock first then read_unlock
@@ -2321,7 +2318,7 @@ private:
                 // won't have gotten there
                 return insert_res();
             }
-            
+
             // unlocking the irrelevant child
             if (res == did_split) {
                 // if the key ended up moving
@@ -2338,38 +2335,28 @@ private:
                 }
             }
 
-            //TLX_BTREE_PRINT(
-                //"BTree::insert_descend into " << inner->childid[slot]);
+            // TLX_BTREE_PRINT(
+            //"BTree::insert_descend into " << inner->childid[slot]);
 
             n->lock->read_unlock();
 
-            insert_res r =
-                insert_descend(inner->childid[slot],
-                               key, value);
+            insert_res r = insert_descend(inner->childid[slot], key, value);
 
             return r;
-        }
-        else // n->is_leafnode() == true
+        } else  // n->is_leafnode() == true
         {
             LeafNode* leaf = static_cast<LeafNode*>(n);
 
             unsigned short slot = find_lower(leaf, key);
 
-            if (!allow_duplicates &&
-                slot < leaf->slotuse && key_equal(key, leaf->key(slot))) {
-                
+            if (!allow_duplicates && slot < leaf->slotuse &&
+                key_equal(key, leaf->key(slot))) {
                 leaf->lock->read_unlock();
                 return insert_res(iterator(leaf, slot), false);
             }
 
-            /* std::cout << "[debug] slot=" << slot << "; leaf=" << leaf
-                      << "; key=" << key
-                      << "; id=" << std::this_thread::get_id() << std::endl; */
-            std::stringstream ss;
-            ss << std::this_thread::get_id();
-            std::string idstr = ss.str();
-            INFO("[InsD] [Before upgrade] slot=%d, leaf=%x, key=%llu, id=%s",
-                 slot, leaf, key, idstr.c_str());
+            DEBUG("[InsD] [Before upgrade] slot=%d, leaf=%x, key=%llu, id=%s",
+                  slot, leaf, key, idstr.c_str());
             // move items and put data item into correct data slot
             TLX_BTREE_ASSERT(slot >= 0 && slot <= leaf->slotuse);
             // leaf will not overflow
@@ -2377,7 +2364,8 @@ private:
 
             leaf->lock->upgradelock();
             // TODO: need to recalculate the slot after being woken up
-            if (slot > leaf->slotuse || leaf->slotuse + 1 > leaf_slotmax) {
+            if (slot > leaf->slotuse || leaf->slotuse + 1 > leaf_slotmax /* ||
+                key_greater(key, leaf->key(slot)) */) {
                 leaf->lock->write_unlock();
                 return insert_res();
             }
@@ -2390,7 +2378,7 @@ private:
             leaf->slotuse++;
             std::cout << "[Insert Descend] key=" << key
                       << " is inserted! by id=" << idstr << std::endl;
-            INFO(
+            DEBUG(
                 "[InsD] [After insert] slot=%d, leaf=%x, key=%llu, id=%s, "
                 "slotuse=%u",
                 slot, leaf, key, idstr.c_str(), leaf->slotuse);
@@ -2417,7 +2405,11 @@ private:
                 child->lock->upgradelock();
                 
                 // parent and child are unlocked in insert_descend
-                if (parent->childid[slot] != child || !child->is_full()) return retry;
+                if (parent->childid[slot] != child || !child->is_full()) {
+                    parent->lock->downgrade_lock();
+                    child->lock->downgrade_lock();
+                    return retry;
+                }
 
                 key_type newkey = key_type();
                 node* newleaf = nullptr;
@@ -2448,8 +2440,16 @@ private:
                 child->lock->upgradelock();
 
                 // parent and child are unlocked in insert_descend
-                if (parent->childid[slot] != child) return retry;
-                if (!child->is_full()) return retry;
+                if (parent->childid[slot] != child) {
+                    parent->lock->downgrade_lock();
+                    child->lock->downgrade_lock();
+                    return retry;
+                }
+                if (!child->is_full()) {
+                    parent->lock->downgrade_lock();
+                    child->lock->downgrade_lock();
+                    return retry;
+                }
 
                 key_type newkey = key_type();
                 node* newnode = nullptr;
