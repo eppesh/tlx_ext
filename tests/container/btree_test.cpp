@@ -43,7 +43,7 @@ static const bool tlx_more_tests = false;
 
 static const bool test_multi = false;
 static const bool multithread = true;
-static const auto seed = std::random_device{}();
+static const auto seed = 2916079312; // TODO std::random_device{}();
 
 std::string format_current_time() {
     // Get the current time from system_clock
@@ -1990,17 +1990,17 @@ std::mutex printmtx;
 int seqnum = 0;
 set_type my_multi_thread_set;
 
-const int NUM_THREADS = 16;
+const int NUM_THREADS = INT32_MAX; // TODO 16
 int cur_numthreads = 1;
 const int thread_start_idx = 2;
 
 // Global array of thread information
-std::vector<thread_info> global_thread_info(NUM_THREADS);
+std::vector<thread_info> global_thread_info(1); // TODO NUM_THREADS
 std::atomic<int> thread_count(0);
 std::map<std::thread::id, int> thread_id_map;
 
 void record_lock(void* node, int lock_type) {
-    if (cur_numthreads > 1 && local_debug_info.tinfo) {
+    if (/* TODO cur_numthreads > 1 &&*/ local_debug_info.tinfo) {
         local_debug_info.tinfo->cur_node = node;
         local_debug_info.tinfo->op = lock_type;
 
@@ -2092,8 +2092,7 @@ void print(const char* op, int val, int id) {
 }
 
 void thread_func(set_type& my_set, int insert_prob, int lookup_prob, int delete_prob, int id) {
-    std::random_device rd;
-    std::mt19937 gen(rd());
+    std::mt19937 gen();
     std::uniform_int_distribution<> dist(0, 99);
     std::uniform_int_distribution<> key_dist(0, MAX_KEY - 1);
 
@@ -2145,7 +2144,7 @@ void test_multithread() {
 
     while (cur_numthreads <= NUM_THREADS) {
         std::vector<std::thread> threads;
-        for (int i = 0; i < cur_numthreads; ++i) {
+        for (int i = 0; i < 1; ++i) { // TODO back to cur_numthreads
             threads.emplace_back(thread_func, std::ref(my_multi_thread_set), insert_prob, lookup_prob, delete_prob, i);
         }
 
