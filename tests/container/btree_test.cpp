@@ -2092,7 +2092,10 @@ void print(const char* op, int val, int id) {
 }
 
 void thread_func(set_type& my_set, int insert_prob, int lookup_prob, int delete_prob, int id) {
-    std::mt19937 gen();
+    std::random_device rd;
+    auto tseed = 1760556926;
+    std::mt19937 gen(tseed);
+    std::cout << "seed: " << tseed << std::endl;
     std::uniform_int_distribution<> dist(0, 99);
     std::uniform_int_distribution<> key_dist(0, MAX_KEY - 1);
 

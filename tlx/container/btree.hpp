@@ -2384,7 +2384,7 @@ private:
             else inner->childid[slot]->lock->readlock();
 
             check_split_res res = check_split_child(inner, inner->childid[slot], slot);
-            if (res == retry) return insert_res();
+            if (res == retry) return insert_res(); // unlocked in check_split_child
 
             // unlocking the irrelevant child
             if (res == did_split) {
@@ -2928,7 +2928,10 @@ private:
 
         root_->lock->readlock();
 
-        if (root_->level == 0) return btree_not_found;
+        if (root_->level == 0) {
+            root_->lock->read_unlock();
+            return btree_not_found;
+        }
 
         // checking edge case (must do this when root_ is locked)
         if (root_->slotuse == 0) {
