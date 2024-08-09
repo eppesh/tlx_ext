@@ -240,7 +240,7 @@ struct SimpleTest {
             // random erase
             std::ranges::shuffle(v, gen);
             for (auto num : v) {
-                bool res = btree.erase(num);
+                bool res = btree.erase(num); // TODO right now root level 2, its child level 0???
                 die_unless(res);
                 die_unless(btree.size() == --size);
             }

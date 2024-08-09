@@ -496,9 +496,6 @@ public: // XXX
         //! in order to prevent inserting into the wrong leaf
         int gen = 0;
 
-        // TODO desc
-        bool willfree = false;
-
         //! Delayed initialisation of constructed node.
         void initialize(const unsigned short l) {
             level = l;
@@ -1382,8 +1379,9 @@ private:
     //! \name Tree Object Data Members
     //! \{
 
-    //! Pointer to the B+ tree's root node, either leaf or inner node.
-    std::atomic<node*> root_;
+    //! Pointer to the B+ tree's root node. If there is only one leaf
+    //! node in the tree, it will point to that node.
+    InnerNode* root_;
 
     //! Pointer to first leaf in the double linked leaf chain.
     LeafNode* head_leaf_;
@@ -1410,17 +1408,21 @@ public:
     //! Default constructor initializing an empty B+ tree with the standard key
     //! comparison function.
     explicit BTree(const allocator_type& alloc = allocator_type())
-        : root_(nullptr), head_leaf_(nullptr), tail_leaf_(nullptr),
+        : head_leaf_(nullptr), tail_leaf_(nullptr),
           allocator_(alloc)
-    { }
+    {
+        root_ = allocate_inner(0);
+    }
 
     //! Constructor initializing an empty B+ tree with a special key
     //! comparison object.
     explicit BTree(const key_compare& kcf,
                    const allocator_type& alloc = allocator_type())
-        : root_(nullptr), head_leaf_(nullptr), tail_leaf_(nullptr),
+        : head_leaf_(nullptr), tail_leaf_(nullptr),
           key_less_(kcf), allocator_(alloc)
-    { }
+    {
+        root_ = allocate_inner(0);
+    }
 
     //! Constructor initializing a B+ tree with the range [first,last). The
     //! range need not be sorted. To create a B+ tree from a sorted range, use
@@ -1428,9 +1430,10 @@ public:
     template <class InputIterator>
     BTree(InputIterator first, InputIterator last,
           const allocator_type& alloc = allocator_type())
-        : root_(nullptr), head_leaf_(nullptr), tail_leaf_(nullptr),
+        : head_leaf_(nullptr), tail_leaf_(nullptr),
           allocator_(alloc) {
         insert(first, last);
+        root_ = allocate_inner(0);
     }
 
     //! Constructor initializing a B+ tree with the range [first,last) and a
@@ -1439,9 +1442,10 @@ public:
     template <class InputIterator>
     BTree(InputIterator first, InputIterator last, const key_compare& kcf,
           const allocator_type& alloc = allocator_type())
-        : root_(nullptr), head_leaf_(nullptr), tail_leaf_(nullptr),
+        : head_leaf_(nullptr), tail_leaf_(nullptr),
           key_less_(kcf), allocator_(alloc) {
         insert(first, last);
+        root_ = allocate_inner(0);
     }
 
     //! Frees up all used B+ tree memory pages
@@ -1598,7 +1602,8 @@ private:
             std::allocator_traits<typename LeafNode::alloc_type>::deallocate(a, ln, 1);
             stats_.leaves--;
             std::lock_guard<std::mutex> printlock(printmtx);
-            std::cout << format_current_time() << " free leaf " << n
+            if (cur_numthreads > 1)
+                std::cout << format_current_time() << " free leaf " << n
                       << " #inner=" << stats_.inner_nodes
                       << " #leaves=" << stats_.leaves << std::endl;
         }
@@ -1609,7 +1614,8 @@ private:
             std::allocator_traits<typename InnerNode::alloc_type>::deallocate(a, in, 1);
             stats_.inner_nodes--;
             std::lock_guard<std::mutex> printlock(printmtx);
-            std::cout << format_current_time() << " free inner " << n
+            if (cur_numthreads > 1) 
+                std::cout << format_current_time() << " free inner " << n
                       << " #inner=" << stats_.inner_nodes
                       << " #leaves=" << stats_.leaves << std::endl;
         }
@@ -1623,12 +1629,11 @@ public:
 
     //! Frees all key/data pairs and all nodes of the tree.
     void clear() {
-        if (root_.load())
+        if (root_->level > 0)
         {
-            clear_recursive(root_.load());
-            free_node(root_.load());
+            clear_recursive(root_);
 
-            root_ = nullptr;
+            root_->slotuse = 0;
             head_leaf_ = tail_leaf_ = nullptr;
 
             // stats_ = tree_stats();
@@ -1852,32 +1857,15 @@ public:
 
     //! Non-STL function checking whether a key is in the B+ tree. The same as
     //! (find(k) != end()) or (count() != 0).
-    bool exists(const key_type& key) {
-        node* n;
-        while (true) {
-            if (!root_.load()) return false;
-
-            n = root_.load();
-            n->lock->readlock();
-            if (n->willfree) {
-                TLX_BTREE_ASSERT(n != root_.load());
-
-                bool islast = n->lock->read_unlock(false);
-
-                if (islast) {
-                    free_node(n);
-                }
-            }
-
-            if (n != root_.load()) {
-                n->lock->read_unlock(false);
-                continue;
-            } else if (root_.load()->slotuse == 0) {
-                return false;
-            } else {
-                break;
-            }
+    bool exists(const key_type& key) const {
+        root_->lock->readlock();
+        
+        if (root_->level == 0) {
+            root_->lock->read_unlock();
+            return false;
         }
+
+        node* n = root_;
 
         while (!n->is_leafnode())
         {
@@ -1901,42 +1889,39 @@ public:
     //! Tries to locate a key in the B+ tree and returns an iterator to the
     //! key/data slot if found. If unsuccessful it returns end().
     iterator find(const key_type& key) {
-        while (true) {
-            node* n = root_.load();
-            if (!n) return end();
-
-            n->lock->readlock();
-            if (n != root_) {
-                n->lock->read_unlock(false);
-                continue;
-            }
-
-            while (!n->is_leafnode())
-            {
-                const InnerNode* inner = static_cast<const InnerNode*>(n);
-                unsigned short slot = find_lower(inner, key);
-
-                inner->childid[slot]->lock->readlock();
-                n->lock->read_unlock();
-
-                n = inner->childid[slot];
-            }
-
-            LeafNode* leaf = static_cast<LeafNode*>(n);
-
-            unsigned short slot = find_lower(leaf, key);
-
-            auto res = (slot < leaf->slotuse && key_equal(key, leaf->key(slot)))
-                   ? iterator(leaf, slot) : end();
-            leaf->lock->read_unlock();
-            return res;
+        root_->lock->readlock();
+        if (root_->level == 0) {
+            root_->lock->read_unlock();
+            return end();
         }
+
+        node* n = root_;
+
+        while (!n->is_leafnode())
+        {
+            const InnerNode* inner = static_cast<const InnerNode*>(n);
+            unsigned short slot = find_lower(inner, key);
+
+            inner->childid[slot]->lock->readlock();
+            inner->lock->read_unlock();
+
+            n = inner->childid[slot];
+        }
+
+        LeafNode* leaf = static_cast<LeafNode*>(n);
+
+        unsigned short slot = find_lower(leaf, key);
+
+        auto res = (slot < leaf->slotuse && key_equal(key, leaf->key(slot)))
+               ? iterator(leaf, slot) : end();
+        leaf->lock->read_unlock();
+        return res;
     }
 
     //! Tries to locate a key in the B+ tree and returns an constant iterator to
     //! the key/data slot if found. If unsuccessful it returns end().
     const_iterator find(const key_type& key) const {
-        const node* n = root_.load();
+        const node* n = root_;
         if (!n) return end();
 
         while (!n->is_leafnode())
@@ -1957,7 +1942,7 @@ public:
     //! Tries to locate a key in the B+ tree and returns the number of identical
     //! key entries found.
     size_type count(const key_type& key) const {
-        const node* n = root_.load();
+        const node* n = root_;
         if (!n) return 0;
 
         while (!n->is_leafnode())
@@ -1990,7 +1975,7 @@ public:
     //! or greater than key, or end() if all keys are smaller.
     // TODO lb and ub not very important
     iterator lower_bound(const key_type& key) {
-        node* n = root_.load();
+        node* n = root_;
         if (!n) return end();
 
         while (!n->is_leafnode())
@@ -2010,7 +1995,7 @@ public:
     //! Searches the B+ tree and returns a constant iterator to the first pair
     //! equal to or greater than key, or end() if all keys are smaller.
     const_iterator lower_bound(const key_type& key) const {
-        const node* n = root_.load();
+        const node* n = root_;
         if (!n) return end();
 
         while (!n->is_leafnode())
@@ -2030,7 +2015,7 @@ public:
     //! Searches the B+ tree and returns an iterator to the first pair greater
     //! than key, or end() if all keys are smaller or equal.
     iterator upper_bound(const key_type& key) {
-        node* n = root_.load();
+        node* n = root_;
         if (!n) return end();
 
         while (!n->is_leafnode())
@@ -2050,7 +2035,7 @@ public:
     //! Searches the B+ tree and returns a constant iterator to the first pair
     //! greater than key, or end() if all keys are smaller or equal.
     const_iterator upper_bound(const key_type& key) const {
-        const node* n = root_.load();
+        const node* n = root_;
         if (!n) return end();
 
         while (!n->is_leafnode())
@@ -2140,8 +2125,8 @@ public: // TODO skipping these two sections
             if (other.size() != 0)
             {
                 stats_.leaves = stats_.inner_nodes = 0;
-                if (other.root_.load()) {
-                    root_ = copy_recursive(other.root_.load());
+                if (other.root_) {
+                    root_ = static_cast<InnerNode*>(copy_recursive(other.root_));
                 }
                 stats_.copy(other.stats_);
             }
@@ -2154,7 +2139,7 @@ public: // TODO skipping these two sections
     //! Copy constructor. The newly initialized B+ tree object will contain a
     //! copy of all key/data pairs.
     BTree(const BTree& other)
-        : root_(nullptr), head_leaf_(nullptr), tail_leaf_(nullptr),
+        : head_leaf_(nullptr), tail_leaf_(nullptr),
           key_less_(other.key_comp()),
           allocator_(other.get_allocator()) {
 
@@ -2162,8 +2147,8 @@ public: // TODO skipping these two sections
         if (size() > 0)
         {
             stats_.leaves = stats_.inner_nodes = 0;
-            if (other.root_.load()) {
-                root_ = copy_recursive(other.root_.load());
+            if (other.root_) {
+                root_ = static_cast<InnerNode*>(copy_recursive(other.root_));
             }
             if (self_verify) verify();
         }
@@ -2301,123 +2286,65 @@ private:
     insert_res
     insert_start(const key_type& key, const value_type& value) {
         //TLX_BTREE_PRINT("insert start");
-        if (!root_.load())
-        {
-            LeafNode* newroot = allocate_leaf();
-            newroot->lock->writelock(false);
+        root_->lock->readlock();
 
-            node* expected = nullptr;
-            bool wonrace = root_.compare_exchange_strong(expected, newroot);
+        if (root_->level == 0) {
+            TLX_BTREE_ASSERT(root_->slotuse == 0);
+            TLX_BTREE_ASSERT(stats_.size == 0);
 
-            if (!wonrace) {
-                free_node(newroot);
-                return insert_res();
-            } else {
-                head_leaf_ = tail_leaf_ = static_cast<LeafNode*>(root_.load());
-            }
-        } else {
-            node* oldroot = root_.load(); // TODO reading the root_ without a lock on it?
-            oldroot->lock->readlock();
-            if (oldroot->willfree) {
-                TLX_BTREE_ASSERT(oldroot != root_.load());
-                bool islast = oldroot->lock->read_unlock(false);
-                if (islast) free_node(oldroot);
+            root_->lock->upgradelock();
+
+            if (root_->slotuse != 0) {
+                root_->lock->write_unlock();
                 return insert_res();
             }
 
-            if (oldroot != root_.load()) {
-                oldroot->lock->read_unlock(false);
-                return insert_res();
-            }
+            root_->childid[0] = head_leaf_ = tail_leaf_ = allocate_leaf();
+
+            root_->level++;
+            root_->gen++;
+            root_->lock->downgrade_lock();
         }
 
-        if (root_.load()->is_leafnode())
-        {
-            // case where the root is the only node and needs to be checked
+        if (root_->is_full()) {
+            root_->lock->upgradelock();
 
-            LeafNode* root = static_cast<LeafNode*>(root_.load());
-
-            if (!root->lock->writelocked()) {
-                int oldgen = root->gen;
-                root->lock->upgradelock();
-                if (root->willfree) {
-                    bool islast = root->lock->write_unlock();
-                    if (islast) free_node(root);
-                    return insert_res();
-                }
-
-                if (root != root_.load() || oldgen != root->gen) {
-                    root->lock->write_unlock(false);
-                    return insert_res();
-                }
+            if (!root_->is_full()) {
+                root_->lock->downgrade_lock();
+                return insert_res();
             }
 
-            if (root->is_full())
-            {
-                //TLX_BTREE_PRINT("BTree::insert_start: make new root, root is LeafNode");
-                key_type rightkey = key_type();
-                node* rightleaf = nullptr;
+            InnerNode* leftchild = allocate_inner(root_->level);
+            leftchild->lock->writelock(false);
+            
+            // copy root into leftchild
+            std::copy(root_->slotkey, root_->slotkey + root_->slotuse,
+                    leftchild->slotkey);
+            std::copy(root_->childid, root_->childid + root_->slotuse + 1,
+                    leftchild->childid);
+            leftchild->slotuse = root_->slotuse;
 
-                split_leaf_node(root, &rightkey, &rightleaf);
+            key_type newkey = key_type();
+            InnerNode* rightchild = nullptr;
+            split_inner_node(leftchild, &newkey, &rightchild); // TODO first split then copy
 
-                InnerNode* newroot = allocate_inner(root_.load()->level + 1);
-                newroot->lock->writelock(false);
-                newroot->slotkey[0] = rightkey;
+            leftchild->lock->downgrade_lock();
 
-                newroot->childid[0] = root_.load();
-                newroot->childid[1] = rightleaf;
-                rightleaf->lock->write_unlock();
+            root_->slotkey[0] = newkey;
+            root_->childid[0] = leftchild;
+            root_->childid[1] = rightchild;
 
-                newroot->slotuse = 1;
-                newroot->lock->downgrade_lock();
+            root_->slotuse = 1;
+            root_->level++;
+            root_->gen++;
 
-                root_ = newroot;
-
-                newroot->childid[0]->lock->write_unlock(); // unlock former root
-            }
-        }
-        else
-        {
-            InnerNode* root = static_cast<InnerNode*>(root_.load());
-            if (root->is_full()) {
-                //TLX_BTREE_PRINT("BTree::insert_start: make new root, root is InnerNode");
-                key_type rightkey = key_type();
-                node* rightleaf = nullptr;
-
-                int oldgen = root->gen;
-                root->lock->upgradelock();
-                if (root->willfree) {
-                    bool islast = root->lock->write_unlock();
-                    if (islast) free_node(root);
-                    return insert_res();
-                }
-
-                if (root != root_ || root->gen != oldgen || !root->is_full()) {
-                    root->lock->write_unlock(false);
-                    return insert_res();
-                }
-
-                split_inner_node(root, &rightkey, &rightleaf);
-
-                InnerNode* newroot = allocate_inner(root_.load()->level + 1);
-                newroot->lock->writelock(false);
-                newroot->slotkey[0] = rightkey;
-
-                newroot->childid[0] = root_.load();
-                newroot->childid[1] = rightleaf;
-                rightleaf->lock->read_unlock();
-
-                newroot->slotuse = 1;
-
-                newroot->lock->downgrade_lock();
-                root_ = newroot;
-
-                newroot->childid[0]->lock->write_unlock(); // unlock former root
-            }
+            root_->lock->downgrade_lock();
+            leftchild->lock->read_unlock();
+            rightchild->lock->read_unlock();
         }
 
         insert_res r =
-            insert_descend(root_.load(), key, value);
+            insert_descend(root_, key, value);
 
         if (r.retry) return r;
 
@@ -2525,19 +2452,18 @@ private:
             LeafNode* child = static_cast<LeafNode*>(c);
             if (child->is_full())
             {
-                auto oldgen = std::make_pair(parent->gen, child->gen);
+                int oldgen = parent->gen;
                 child->lock->write_unlock();
                 parent->lock->upgradelock();
-                if (parent->willfree) {
-                    bool islast = parent->lock->write_unlock();
-                    if (islast) free_node(parent);
+
+                if (parent->gen != oldgen) {
+                    parent->lock->write_unlock();
                     return retry;
                 }
 
                 child->lock->writelock();
 
-                if (std::make_pair(parent->gen, child->gen) != oldgen
-                        || parent->childid[slot] != child
+                if (parent->childid[slot] != child
                         || !child->is_full()) {
                     parent->lock->write_unlock();
                     child->lock->write_unlock();
@@ -2545,11 +2471,12 @@ private:
                 }
 
                 key_type newkey = key_type();
-                node* newleaf = nullptr;
+                LeafNode* newleaf = nullptr;
 
                 split_leaf_node(child, &newkey, &newleaf);
 
                 child->gen++;
+                parent->gen++;
 
                 std::copy_backward(
                     parent->slotkey + slot, parent->slotkey + parent->slotuse,
@@ -2571,18 +2498,18 @@ private:
             TLX_BTREE_ASSERT(c->lock->readlocked());
             InnerNode* child = static_cast<InnerNode*>(c);
             if (child->is_full()) {
-                auto prevgens = std::make_pair(parent->gen, child->gen);
+                int oldgen = parent->gen;
                 child->lock->read_unlock();
                 parent->lock->upgradelock();
-                if (parent->willfree) {
-                    bool islast = parent->lock->write_unlock();
-                    if (islast) free_node(parent);
+
+                if (parent->gen != oldgen) {
+                    parent->lock->write_unlock();
                     return retry;
                 }
+
                 child->lock->writelock();
 
-               if (std::make_pair(parent->gen, child->gen) != prevgens
-                        || parent->childid[slot] != child
+               if (parent->childid[slot] != child
                         || !child->is_full()) {
                     parent->lock->write_unlock();
                     child->lock->write_unlock();
@@ -2590,7 +2517,7 @@ private:
                 }
 
                 key_type newkey = key_type();
-                node* newnode = nullptr;
+                InnerNode* newnode = nullptr;
 
                 split_inner_node(child, &newkey, &newnode);
                 child->gen++;
@@ -2606,6 +2533,7 @@ private:
                 parent->slotkey[slot] = newkey;
                 parent->childid[slot + 1] = newnode;
                 parent->slotuse++;
+                parent->gen++;
 
                 parent->lock->downgrade_lock();
                 return did_split;
@@ -2615,9 +2543,10 @@ private:
     }
 
     //! Split up a leaf node into two equally-filled sibling leaves. Returns the
-    //! new nodes and its insertion key in the two parameters.
+    //! new nodes and its insertion key in the two parameters. The new
+    //! node is write locked.
     void split_leaf_node(LeafNode* leaf,
-                         key_type* out_newkey, node** out_newleaf) {
+                         key_type* out_newkey, LeafNode** out_newleaf) {
 
         TLX_BTREE_ASSERT(leaf->is_full());
         TLX_BTREE_ASSERT(leaf->lock->writelocked());
@@ -2652,9 +2581,12 @@ private:
     }
 
     //! Split up an inner node into two equally-filled sibling nodes. Returns
-    //! the new nodes and its insertion key in the two parameters.
+    //! the new nodes and its insertion key in the two parameters. The new
+    //! node is read locked.
     void split_inner_node(InnerNode* inner, key_type* out_newkey,
-                          node** out_newinner) {
+                          InnerNode** out_newinner) {
+        // TODO changed type of out_newinner from node to InnerNode, contribute to original
+        // also split leaf node too
         TLX_BTREE_ASSERT(inner->is_full());
         TLX_BTREE_ASSERT(inner->lock->writelocked());
 
@@ -2686,6 +2618,7 @@ private:
     //! \}
 
 public:
+#if 0
     //! \name Bulk Loader - Construct Tree from Sorted Sequence
     //! \{
 
@@ -2838,6 +2771,15 @@ public:
     }
 
     //! \}
+#else
+    // bulk_load not implemented
+    template <typename Iterator>
+    void bulk_load(Iterator ibegin, Iterator iend) {
+        (void)ibegin;
+        (void)iend;
+        abort();
+    }
+#endif
 
 private:
     //! \name Support Class Encapsulating Deletion Results
@@ -2942,15 +2884,17 @@ public:
 
         if (self_verify) verify();
 
-        if (!root_.load()) return;
+        if (!root_) return;
 
         bool successful;
         if (!allow_duplicates) {
             successful = erase_one(iter.key());
         } else {
-            result_t result = erase_iter_descend(
-                iter, root_.load(), nullptr, nullptr, nullptr, nullptr, nullptr, 0);
-            successful = !result.has(btree_not_found);
+            /*result_t result = erase_iter_descend(
+                iter, root_, nullptr, nullptr, nullptr, nullptr, nullptr, 0);
+            successful = !result.has(btree_not_found);*/
+            // not implemented because I changed the structure of root
+            abort();
         }
 
         if (successful)
@@ -2982,132 +2926,133 @@ private:
 
         if (self_verify) verify();
 
-        if (!root_.load()) return btree_not_found;
+        root_->lock->readlock();
 
-        node* oldroot = root_;
-        if (oldroot->is_leafnode()) oldroot->lock->writelock();
-        else oldroot->lock->readlock();
+        if (root_->level == 0) return btree_not_found;
 
-        if (oldroot->willfree) {
-            TLX_BTREE_ASSERT(oldroot != root_.load());
-            bool islast;
-            if (oldroot->is_leafnode()) islast = oldroot->lock->write_unlock(false);
-            else islast = oldroot->lock->read_unlock(false);
+        // checking edge case (must do this when root_ is locked)
+        if (root_->slotuse == 0) {
+            root_->childid[0]->lock->readlock();
+            LeafNode* child = static_cast<LeafNode*>(root_->childid[0]);
+            
+            if (child->slotuse == 1) {
+                if (key_equal(child->key(0), key)) {
+                    child->lock->read_unlock();
 
-            if (islast) free_node(oldroot);
-            return restart;
-        }
-
-        if (oldroot != root_) {
-            if (oldroot->is_leafnode()) oldroot->lock->write_unlock();
-            else oldroot->lock->read_unlock(false);
-            return restart; // root was changed by other thread
-        }
-
-        if (!root_.load()->is_leafnode() && root_.load()->slotuse <= 1)
-        {
-            InnerNode* root = static_cast<InnerNode*>(root_.load());
-            TLX_BTREE_ASSERT(root->slotuse == 1);
-            if (root->level == 1)
-            {
-                root->childid[0]->lock->readlock();
-                root->childid[1]->lock->readlock();
-                // then these must be leaves
-                LeafNode* leftchild = static_cast<LeafNode*>(root->childid[0]);
-                LeafNode* rightchild = static_cast<LeafNode*>(root->childid[1]);
-                if (leftchild->slotuse + rightchild->slotuse < inner_slotmax)
-                {
-                    // case: they can merge
-                    auto oldgen = std::make_tuple(root->gen, leftchild->gen, rightchild->gen);
-                    leftchild->lock->read_unlock();
-                    rightchild->lock->read_unlock();
-
-                    root->lock->upgradelock();
-                    if (root->willfree) {
-                        bool islast = root->lock->write_unlock();
-                        if (islast) free_node(root);
+                    int oldgen = root_->gen;
+                    root_->lock->upgradelock();
+                    if (root_->gen != oldgen) {
+                        root_->lock->write_unlock();
                         return restart;
                     }
-                    leftchild->lock->writelock();
-                    rightchild->lock->writelock();
+                    child->lock->writelock();
 
-                    bool genmatch = (oldgen
-                            == std::make_tuple(root_.load()->gen, leftchild->gen, rightchild->gen));
-
-                    if (root_.load()->slotuse > 1 || root_.load()->is_leafnode() || !genmatch) {
-                        root->lock->write_unlock();
-                        leftchild->lock->write_unlock();
-                        rightchild->lock->write_unlock();
-                        return restart;
-                    }
-
-                    merge_leaves(leftchild, rightchild, root);
-                    free_node(rightchild);
-
-                    root->willfree = true;
-                    bool islast = root->lock->write_unlock();
-                    if (islast) free_node(root);
-
-                    root_ = leftchild;
-
-                    leftchild->gen++;
+                    free_node(child);
+                    root_->gen++;
+                    root_->level = 0;
+                    stats_.size--;
+                    return btree_ok;
                 } else {
-                    leftchild->lock->read_unlock();
-                    rightchild->lock->read_unlock();
+                    root_->lock->read_unlock();
+                    root_->childid[0]->lock->read_unlock();
+                    return btree_not_found;
                 }
             } else {
-                root->childid[0]->lock->readlock();
-                root->childid[1]->lock->readlock();
-                InnerNode* leftchild = static_cast<InnerNode*>(root->childid[0]);
-                InnerNode* rightchild = static_cast<InnerNode*>(root->childid[1]);
-                if (leftchild->slotuse + rightchild->slotuse < inner_slotmax)
-                {
-                    // case: they can merge
-                    auto oldgen = std::make_tuple(root->gen, leftchild->gen, rightchild->gen);
-                    leftchild->lock->read_unlock();
-                    rightchild->lock->read_unlock();
-                    root->lock->upgradelock();
-                    if (root->willfree) {
-                        bool islast = root->lock->write_unlock();
-                        if (islast) free_node(root);
-                        return restart;
-                    }
+                root_->childid[0]->lock->read_unlock();
+            }
+        }
+        
+        // if the root only has one child,
+        // root_ will only point to one node, and therefore should
+        // be skipped in erase_one_descend
+        node* to_descendin = root_;
 
-                    leftchild->lock->writelock();
-                    rightchild->lock->writelock();
+        if (root_->slotuse == 1) {
+            root_->childid[0]->lock->readlock();
+            root_->childid[1]->lock->readlock();
 
-                    bool genmatch = (oldgen
-                            == std::make_tuple(root_.load()->gen, leftchild->gen, rightchild->gen));
+            node* leftchild = root_->childid[0];
+            node* rightchild = root_->childid[1];
+            
+            auto slotmax = 
+                    leftchild->is_leafnode() ? leaf_slotmax : inner_slotmax;
+            if (leftchild->slotuse + rightchild->slotuse < slotmax)
+            {
+                // case: they can merge
+                int oldgen = root_->gen;
+                leftchild->lock->read_unlock();
+                rightchild->lock->read_unlock();
 
-                    if (root_.load()->slotuse > 1 || root_.load()->is_leafnode() || !genmatch
-                            || leftchild->slotuse + rightchild->slotuse >= inner_slotmax) {
-                        root->lock->write_unlock();
-                        leftchild->lock->write_unlock();
-                        rightchild->lock->write_unlock();
-                        return restart;
-                    }
-                    merge_inner(leftchild, rightchild, root, 0);
-                    free_node(rightchild);
+                root_->lock->upgradelock();
 
-                    bool islast = root->lock->write_unlock();
-                    if (islast) free_node(root);
-
-                    root_ = leftchild;
-
-                    leftchild->gen++;
-
-                    root_.load()->lock->downgrade_lock();
-                } else {
-                    leftchild->lock->read_unlock();
-                    rightchild->lock->read_unlock();
+                if (root_->gen != oldgen) {
+                    root_->lock->write_unlock();
+                    return restart;
                 }
+
+                leftchild = root_->childid[0];
+                rightchild = root_->childid[1];
+                leftchild->lock->writelock();
+                rightchild->lock->writelock();
+
+                if (leftchild->slotuse + rightchild->slotuse >= slotmax) {
+                    root_->lock->write_unlock();
+                    leftchild->lock->write_unlock();
+                    rightchild->lock->write_unlock();
+                    return restart;
+                }
+
+                if (leftchild->is_leafnode()) {
+                    LeafNode* leftleaf = static_cast<LeafNode*>(leftchild);
+                    LeafNode* rightleaf = static_cast<LeafNode*>(rightchild);
+
+                    merge_leaves(leftleaf, rightleaf, root_);
+                    free_node(rightleaf);
+
+                    root_->childid[0] = leftleaf;
+                    root_->slotuse = 0;
+
+                    root_->gen++;
+                    leftleaf->gen++;
+
+                    root_->lock->downgrade_lock();
+                    leftleaf->lock->write_unlock();
+                } else {
+                    InnerNode* leftinner = static_cast<InnerNode*>(leftchild);
+                    InnerNode* rightinner = static_cast<InnerNode*>(rightchild);
+
+                    merge_inner(leftinner, rightinner, root_, 0);
+
+                    std::copy(leftinner->slotkey, leftinner->slotkey + leftinner->slotuse,
+                            root_->slotkey);
+                    std::copy(leftinner->childid, leftinner->childid + leftinner->slotuse + 1,
+                            root_->childid);
+
+                    root_->slotuse = leftinner->slotuse;
+
+                    free_node(leftinner);
+                    free_node(rightinner);
+
+                    root_->gen++;
+                    root_->level--;
+                    root_->lock->downgrade_lock();
+                }
+            } else {
+                leftchild->lock->read_unlock();
+                rightchild->lock->read_unlock();
             }
         }
 
+        if (root_->slotuse == 0) {
+            if (root_->level > 1) root_->childid[0]->lock->readlock();
+            else root_->childid[0]->lock->writelock();
+            root_->lock->read_unlock();
+            to_descendin = root_->childid[0];
+        }
         //if (self_verify) verify();
 
         result_flags_t result = erase_one_descend(
-            key, root_.load());
+            key, to_descendin);
 
         if (result == restart) return restart;
 
@@ -3146,6 +3091,12 @@ private:
 
             TLX_BTREE_PRINT("erase one descend LeafNode" << leaf);
 
+            if (stats_.size > leaf->slotuse && leaf->is_underflow()) {
+                TLX_BTREE_ASSERT(cur_numthreads > 1);
+                leaf->lock->write_unlock();
+                return restart;
+            }
+
             unsigned short slot = find_lower(leaf, key);
 
             if (slot >= leaf->slotuse || !key_equal(key, leaf->key(slot)))
@@ -3163,7 +3114,6 @@ private:
                       leaf->slotdata + slot);
 
             leaf->slotuse--;
-
             leaf->lock->write_unlock();
             return btree_ok;
         }
@@ -3184,11 +3134,12 @@ private:
 
             if (parent->level == 1)
             {
+                // children are leaf nodes
                 TLX_BTREE_PRINT("erase one descend: leafnode children");
 
-                parent->childid[fake_slot]->lock->writelock();
-                parent->childid[fake_slot + 1]->lock->writelock();
-                // children are leaf nodes
+                parent->childid[fake_slot]->lock->readlock();
+                parent->childid[fake_slot + 1]->lock->readlock();
+
                 LeafNode* leftchild = static_cast<LeafNode*>
                         (parent->childid[fake_slot]);
 
@@ -3200,23 +3151,23 @@ private:
                // it's totally fine for both to be few
                 if (leftchild->is_underflow() || rightchild->is_underflow()) {
 
-                    auto oldgen = std::make_tuple(parent->gen, leftchild->gen, rightchild->gen);
-                    leftchild->lock->write_unlock();
-                    rightchild->lock->write_unlock();
+                    int oldgen = parent->gen;
+                    leftchild->lock->read_unlock();
+                    rightchild->lock->read_unlock();
                     parent->lock->upgradelock();
-                    if (parent->willfree) {
-                        bool islast = parent->lock->write_unlock();
-                        if (islast) free_node(parent);
+
+                    if (parent->gen != oldgen) {
+                        parent->lock->write_unlock();
                         return restart;
                     }
 
                     leftchild->lock->writelock();
                     rightchild->lock->writelock();
 
-                    bool genmatch = (oldgen
-                            == std::make_tuple(parent->gen, leftchild->gen, rightchild->gen));
+                    TLX_BTREE_ASSERT(leftchild == parent->childid[fake_slot]);
+                    TLX_BTREE_ASSERT(rightchild == parent->childid[fake_slot + 1]);
 
-                    if (!genmatch || !(leftchild->is_underflow() || rightchild->is_underflow()) ) {
+                    if ( !(leftchild->is_underflow() || rightchild->is_underflow()) ) {
                         parent->lock->write_unlock();
                         leftchild->lock->write_unlock();
                         rightchild->lock->write_unlock();
@@ -3240,11 +3191,15 @@ private:
                     }
 
                     TLX_BTREE_ASSERT(find_lower(parent, key) == slot);
-                }
 
-                leftchild->lock->write_unlock();
-                if (rightchild != nullptr)
-                    rightchild->lock->write_unlock();
+                    leftchild->lock->write_unlock();
+                    if (rightchild != nullptr) {
+                        rightchild->lock->write_unlock();
+                    }
+                } else {
+                    leftchild->lock->read_unlock();
+                    rightchild->lock->read_unlock();
+                }
 
                 parent->childid[slot]->lock->writelock();
             }
@@ -3266,23 +3221,24 @@ private:
                 // it's totally fine for both to be few
                 if (leftchild->is_underflow() || rightchild->is_underflow()) {
 
-                    auto oldgen = std::make_tuple(parent->gen, leftchild->gen, rightchild->gen);
+                    int oldgen = parent->gen;
+
                     leftchild->lock->read_unlock();
                     rightchild->lock->read_unlock();
                     parent->lock->upgradelock();
-                    if (parent->willfree) {
-                        bool islast = parent->lock->write_unlock();
-                        if (islast) free_node(parent);
+
+                    if (parent->gen != oldgen) {
+                        parent->lock->write_unlock();
                         return restart;
                     }
 
                     leftchild->lock->writelock();
                     rightchild->lock->writelock();
 
-                    bool genmatch = (oldgen
-                            == std::make_tuple(parent->gen, leftchild->gen, rightchild->gen));
+                    TLX_BTREE_ASSERT(leftchild == parent->childid[fake_slot]);
+                    TLX_BTREE_ASSERT(rightchild == parent->childid[fake_slot + 1]);
 
-                    if (!genmatch || !(leftchild->is_underflow() || rightchild->is_underflow()) ) {
+                    if ( !(leftchild->is_underflow() || rightchild->is_underflow()) ) {
                         parent->lock->write_unlock();
                         leftchild->lock->write_unlock();
                         rightchild->lock->write_unlock();
@@ -3379,9 +3335,6 @@ private:
             result_t res __attribute__((unused)) =
                     shift_left_leaf(leftchild, rightchild, parent, parentslot);
             TLX_BTREE_ASSERT(!res.has(btree_update_lastkey));
-
-            leftchild->gen++;
-            rightchild->gen++;
         }
         // case: the right takes from the left
         else
@@ -3389,11 +3342,11 @@ private:
             TLX_BTREE_ASSERT(rightchild->slotuse < leftchild->slotuse);
             TLX_BTREE_ASSERT(rightchild->is_few());
             shift_right_leaf(leftchild, rightchild, parent, parentslot);
-
-            leftchild->gen++;
-            rightchild->gen++;
         }
 
+        leftchild->gen++;
+        if (*rightchildp) rightchild->gen++;
+        parent->gen++;
         parent->lock->downgrade_lock();
     }
 
@@ -3451,9 +3404,6 @@ private:
         {
             TLX_BTREE_ASSERT(rightchild->slotuse > leftchild->slotuse);
             shift_left_inner(leftchild, rightchild, parent, parentslot);
-
-            leftchild->gen++;
-            rightchild->gen++;
         }
         // case: the right takes from the left
         else
@@ -3461,17 +3411,19 @@ private:
             TLX_BTREE_ASSERT(rightchild->slotuse < leftchild->slotuse);
             TLX_BTREE_ASSERT(rightchild->is_few());
             shift_right_inner(leftchild, rightchild, parent, parentslot);
-
-            leftchild->gen++;
-            rightchild->gen++;
         }
 
+        parent->gen++;
+        leftchild->gen++;
         parent->lock->downgrade_lock();
         leftchild->lock->downgrade_lock();
-        if (*rightchildp != nullptr)
+        if (*rightchildp != nullptr) {
+            rightchild->gen++;
             rightchild->lock->downgrade_lock();
+        }
     }
 
+#if 0
     /*!
      * Erase one key/data pair referenced by an iterator in the B+ tree.
      *
@@ -3546,12 +3498,12 @@ private:
                     }
                     else
                     {
-                        TLX_BTREE_ASSERT(leaf == root_.load());
+                        TLX_BTREE_ASSERT(leaf == root_);
                     }
                 }
             }
 
-            if (leaf->is_underflow() && !(leaf == root_.load() && leaf->slotuse >= 1))
+            if (leaf->is_underflow() && !(leaf == root_ && leaf->slotuse >= 1))
             {
                 // determine what to do about the underflow
 
@@ -3559,10 +3511,10 @@ private:
                 // and set root to nullptr.
                 if (left_leaf == nullptr && right_leaf == nullptr)
                 {
-                    TLX_BTREE_ASSERT(leaf == root_.load());
+                    TLX_BTREE_ASSERT(leaf == root_);
                     TLX_BTREE_ASSERT(leaf->slotuse == 0);
 
-                    free_node(root_.load());
+                    free_node(root_);
 
                     root_ = leaf = nullptr;
                     head_leaf_ = tail_leaf_ = nullptr;
@@ -3755,13 +3707,13 @@ private:
             }
 
             if (inner->is_underflow() &&
-                !(inner == root_.load() && inner->slotuse >= 1))
+                !(inner == root_ && inner->slotuse >= 1))
             {
                 // case: the inner node is the root and has just one
                 // child. that child becomes the new root
                 if (left_inner == nullptr && right_inner == nullptr)
                 {
-                    TLX_BTREE_ASSERT(inner == root_.load());
+                    TLX_BTREE_ASSERT(inner == root_);
                     TLX_BTREE_ASSERT(inner->slotuse == 0);
 
                     root_ = inner->childid[0];
@@ -3843,6 +3795,7 @@ private:
             return myres;
         }
     }
+#endif
 
     //! Merge two leaf nodes. The function moves all key/data pairs from right
     //! to left and sets right's slotuse to zero. The right slot is then removed
@@ -4169,8 +4122,8 @@ public:
     //! function requires that the header is compiled with TLX_BTREE_DEBUG and
     //! that key_type is printable via std::ostream.
     void print(std::ostream& os) const {
-        if (root_.load() && root_.load()->slotuse > 0) {
-            print_node(os, root_.load(), 0, true);
+        if (root_ && root_->level == 0) {
+            print_node(os, root_, 0, true);
         }
     }
 
@@ -4256,9 +4209,9 @@ public:
         key_type minkey, maxkey;
         tree_stats vstats;
 
-        if (root_.load() && root_.load()->slotuse > 0)
+        if (root_ && root_->level > 0)
         {
-            verify_node(root_.load(), &minkey, &maxkey, vstats);
+            verify_node(root_, &minkey, &maxkey, vstats);
 
             tlx_die_unless(vstats.size == stats_.size);
             tlx_die_unless(vstats.leaves == stats_.leaves);
@@ -4271,14 +4224,14 @@ public:
 #ifdef TLX_BTREE_DEBUG
 
     void verify_one_node(const node* n) const {
-        if (!root_.load() || root_.load()->slotuse == 0) return;
+        if (!root_->childid[0]) return;
 
         if (n->is_leafnode())
         {
             const LeafNode* leaf = static_cast<const LeafNode*>(n);
 
-            tlx_die_unless(leaf == root_.load() || leaf->slotuse >= leaf_slotmin - 1);
-            tlx_die_unless(leaf->slotuse > 0);
+            tlx_die_unless(root_->level <= 1 || leaf->slotuse >= leaf_slotmin - 1);
+            tlx_die_unless(leaf->slotuse > 0 || stats_.size == 0);
 
             for (unsigned short slot = 0; slot < leaf->slotuse - 1; ++slot)
             {
@@ -4290,8 +4243,7 @@ public:
         {
             const InnerNode* inner = static_cast<const InnerNode*>(n);
 
-            tlx_die_unless(inner == root_.load() || inner->slotuse >= inner_slotmin - 1);
-            tlx_die_unless(inner->slotuse > 0);
+            tlx_die_unless(inner == root_ || inner->slotuse >= inner_slotmin - 1);
 
             for (unsigned short slot = 0; slot < inner->slotuse - 1; ++slot)
             {
@@ -4315,7 +4267,7 @@ private:
         {
             const LeafNode* leaf = static_cast<const LeafNode*>(n);
 
-            tlx_die_unless(leaf == root_.load() || leaf->slotuse >= leaf_slotmin - 1);
+            tlx_die_unless(root_->level <= 1 || leaf->slotuse >= leaf_slotmin - 1);
             tlx_die_unless(leaf->slotuse > 0);
             tlx_die_unless(!leaf->lock->readlocked());
             tlx_die_unless(!leaf->lock->writelocked());
@@ -4337,8 +4289,7 @@ private:
             const InnerNode* inner = static_cast<const InnerNode*>(n);
             vstats.inner_nodes++;
 
-            tlx_die_unless(inner == root_.load() || inner->slotuse >= inner_slotmin - 1);
-            tlx_die_unless(inner->slotuse > 0);
+            tlx_die_unless(inner == root_ || inner->slotuse >= inner_slotmin - 1);
             tlx_die_unless(!inner->lock->readlocked());
             tlx_die_unless(!inner->lock->writelocked());
 
