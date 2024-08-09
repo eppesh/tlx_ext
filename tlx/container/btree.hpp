@@ -2310,7 +2310,7 @@ private:
             root_->lock->upgradelock();
 
             if (!root_->is_full()) {
-                root_->lock->downgrade_lock();
+                root_->lock->write_unlock();
                 return insert_res();
             }
 
