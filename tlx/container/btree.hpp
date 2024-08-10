@@ -202,6 +202,10 @@ public:
     //! with TLX_BTREE_DEBUG and the key type must be std::ostream printable.
     static const bool debug = traits::debug;
 
+    //! Allow nodes to be over large and over small
+    static const unsigned short buffer_threshold =
+        std::floor(leaf_slotmax / 10);
+
     //! \}
 
 private:
@@ -218,10 +222,14 @@ private:
         //! pointers
         unsigned short slotuse;
 
+        //! Cooldown counter, avoid oscillations between split and merge
+        unsigned short cooldown;
+
         //! Delayed initialisation of constructed node.
         void initialize(const unsigned short l) {
             level = l;
             slotuse = 0;
+            cooldown = 0;
         }
 
         //! True if this is a leaf node.
@@ -254,17 +262,29 @@ private:
 
         //! True if the node's slots are full.
         bool is_full() const {
-            return (node::slotuse == inner_slotmax);
+            return (node::slotuse == (inner_slotmax + buffer_threshold));
         }
 
         //! True if few used entries, less than half full.
         bool is_few() const {
-            return (node::slotuse <= inner_slotmin);
+            return (node::slotuse <= (inner_slotmin - buffer_threshold));
         }
 
         //! True if node has too few entries.
         bool is_underflow() const {
-            return (node::slotuse < inner_slotmin);
+            return (node::slotuse < (inner_slotmin - buffer_threshold));
+        }
+
+        //! True if the node's slots are in valid full range
+        bool is_full_valid() const {
+            return ((node::slotuse >= (inner_slotmax - buffer_threshold)) &&
+                    (node::slotuse <= (inner_slotmax + buffer_threshold)));
+        }
+
+        //! True if the node's slots are in valid underflow range
+        bool is_underflow_valid() const {
+            return ((node::slotuse <= (inner_slotmin + buffer_threshold)) &&
+                    (node::slotuse >= (inner_slotmin - buffer_threshold)));
         }
     };
 
@@ -296,17 +316,17 @@ private:
 
         //! True if the node's slots are full.
         bool is_full() const {
-            return (node::slotuse == leaf_slotmax);
+            return (node::slotuse == (leaf_slotmax + buffer_threshold));
         }
 
         //! True if few used entries, less than half full.
         bool is_few() const {
-            return (node::slotuse <= leaf_slotmin);
+            return (node::slotuse <= (leaf_slotmin - buffer_threshold));
         }
 
         //! True if node has too few entries.
         bool is_underflow() const {
-            return (node::slotuse < leaf_slotmin);
+            return (node::slotuse < (leaf_slotmin - buffer_threshold));
         }
 
         //! Set the (key,data) pair in slot. Overloaded function used by
@@ -314,6 +334,18 @@ private:
         void set_slot(unsigned short slot, const value_type& value) {
             TLX_BTREE_ASSERT(slot < node::slotuse);
             slotdata[slot] = value;
+        }
+
+        //! True if the node's slots are in valid full range
+        bool is_full_valid() const {
+            return ((node::slotuse >= (leaf_slotmax - buffer_threshold)) &&
+                    (node::slotuse <= (leaf_slotmax + buffer_threshold)));
+        }
+
+        //! True if the node's slots are in valid underflow range
+        bool is_underflow_valid() const {
+            return ((node::slotuse <= (leaf_slotmin + buffer_threshold)) &&
+                    (node::slotuse >= (leaf_slotmin - buffer_threshold)));
         }
     };
 
@@ -2073,6 +2105,10 @@ private:
     //! new nodes and it's insertion key in the two parameters.
     void split_leaf_node(LeafNode* leaf,
                          key_type* out_newkey, node** out_newleaf) {
+        if (leaf->cooldown > 0) {
+            --leaf->cooldown;
+            return;
+        }
         TLX_BTREE_ASSERT(leaf->is_full());
 
         unsigned short mid = (leaf->slotuse >> 1);
@@ -2101,6 +2137,9 @@ private:
 
         *out_newkey = leaf->key(leaf->slotuse - 1);
         *out_newleaf = newleaf;
+
+        leaf->cooldown = 3;
+        newleaf->cooldown = 3;
     }
 
     //! Split up an inner node into two equally-filled sibling nodes. Returns
@@ -2109,6 +2148,10 @@ private:
     //! after the insert.
     void split_inner_node(InnerNode* inner, key_type* out_newkey,
                           node** out_newinner, unsigned int addslot) {
+        if (inner->cooldown > 0) {
+            --inner->cooldown;
+            return;
+        }
         TLX_BTREE_ASSERT(inner->is_full());
 
         unsigned short mid = (inner->slotuse >> 1);
@@ -2141,6 +2184,9 @@ private:
 
         *out_newkey = inner->key(mid);
         *out_newinner = newinner;
+
+        inner->cooldown = 3;
+        newinner->cooldown = 3;
     }
 
     //! \}
