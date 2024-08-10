@@ -45,9 +45,13 @@ static const bool test_multi = false;
 static const bool multithread = true;
 static const auto seed = std::random_device{}();
 
-std::string format_current_time() {
+const int STACK_START_TO_PRINT = 2;
+const int NUM_STACK_TO_PRINT = 4;
+
+std::string format_time(
+  std::chrono::time_point<std::chrono::system_clock> ts) {
     // Get the current time from system_clock
-    auto now = std::chrono::system_clock::now();
+    auto now = ts;
 
     // Convert to time_t to get calendar time
     std::time_t time_t_now = std::chrono::system_clock::to_time_t(now);
@@ -68,6 +72,12 @@ std::string format_current_time() {
     ss << '.' << std::setw(6) << std::setfill('0') << microseconds.count();
 
     return ss.str();
+}
+
+std::string format_current_time() {
+    // Get the current time from system_clock
+    auto now = std::chrono::system_clock::now();
+    return format_time(now);
 }
 
 void split_sym(char *input, std::vector<std::string> *resultp) {
@@ -116,23 +126,24 @@ std::string extract_func_name(const std::string& input) {
     return res;
 }
 
-std::string stack_sym(int start_stack, int num_stacks) {
-    const int NUM = 10;
-    void * addrs[NUM];
-    int num_frames = backtrace(addrs, NUM);
-    char **strs = backtrace_symbols(addrs, num_frames);
+std::string stack_sym(void * const addrs[NUM_STACK_TO_PRINT]) {
+    char **strs = backtrace_symbols(addrs, NUM_STACK_TO_PRINT);
     int status;
     std::vector<std::string> names;
     std::string s = "";
 
-    for (int i = start_stack; i < std::min(start_stack + num_stacks, num_frames); ++i) {
+    for (int i = 0; i < NUM_STACK_TO_PRINT; ++i) {
         split_sym(strs[i], &names);
         char *demangled_name = abi::__cxa_demangle(names[3].c_str(), 0, 0, &status);
-        std::string func_name = extract_func_name(demangled_name);
-        std::stringstream stream;
-        stream << func_name << '(' << std::hex << addrs[i] << ") ";
-        s += stream.str();
-        free(demangled_name);
+        if (demangled_name == nullptr) {
+          s += "(null) ";
+        } else {
+          std::string func_name = extract_func_name(demangled_name);
+          std::stringstream stream;
+          stream << func_name << '(' << std::hex << addrs[i] << ") ";
+          s += stream.str();
+          free(demangled_name);
+        }
     }
     return s;
 }
@@ -1999,32 +2010,88 @@ std::vector<thread_info> global_thread_info(NUM_THREADS);
 std::atomic<int> thread_count(0);
 std::map<std::thread::id, int> thread_id_map;
 
+struct LockInfo {
+  std::chrono::time_point<std::chrono::system_clock> timestamp;
+  int threadidx;
+  void *node;
+  int gen;
+  unsigned short slotuse;
+  unsigned int numreader;
+  bool haswriter;
+  int writerswaiting = 0;
+  int readerswaiting = 0;
+  int upgradewaiting = 0;
+  int lock_type;
+  void *addrs[NUM_STACK_TO_PRINT];
+};
+
+enum {
+  TOTAL_DEBUG_LOCK_INFO = 2000
+};
+std::vector<LockInfo> debug_lock_info(TOTAL_DEBUG_LOCK_INFO);
+std::atomic<size_t> cur_debug_lock_info = 0;
+
 void record_lock(void* node, int lock_type) {
-    if (!debug_print) return;
     if (cur_numthreads > 1 && local_debug_info.tinfo) {
         local_debug_info.tinfo->cur_node = node;
         local_debug_info.tinfo->op = lock_type;
 
-        std::lock_guard<std::mutex> l(printmtx);
-        set_type::btree_impl::node *nodep = static_cast<set_type::btree_impl::node *>(node);
-        std::cout << format_current_time() << " thread " <<
-          local_debug_info.tinfo->threadidx << " node "
-                  << node << " (g" << nodep->gen
-                  << " c" << nodep->slotuse
-                  << ") (r" << nodep->lock->numreader
-                  << "|w" << nodep->lock->haswriter
-                  << " waiter:r" << nodep->lock->readerswaiting
-                  << "|w" << nodep->lock->writerswaiting
-                  << "|u" << nodep->lock->upgradewaiting
-                  << ") "
-                  << lock_type_to_string(lock_type)
-                << " " << stack_sym() << std::endl;
+        size_t idx = cur_debug_lock_info.fetch_add(
+          1, std::memory_order_relaxed);
+
+        LockInfo& lock_info = debug_lock_info[idx];
+        lock_info.timestamp = std::chrono::system_clock::now();
+        lock_info.threadidx = local_debug_info.tinfo->threadidx;
+        lock_info.node = node;
+
+        set_type::btree_impl::node *nodep =
+          static_cast<set_type::btree_impl::node *>(node);
+        lock_info.gen = nodep->gen;
+        lock_info.slotuse = nodep->slotuse;
+        lock_info.numreader = nodep->lock->numreader;
+        lock_info.haswriter = nodep->lock->haswriter;
+        lock_info.readerswaiting = nodep->lock->readerswaiting;
+        lock_info.writerswaiting = nodep->lock->writerswaiting;
+        lock_info.upgradewaiting = nodep->lock->upgradewaiting;
+        lock_info.lock_type = lock_type;
+
+        const int TOTAL_STACK =
+          STACK_START_TO_PRINT + NUM_STACK_TO_PRINT;
+        void *addrs[TOTAL_STACK];
+        backtrace(addrs, TOTAL_STACK);
+        for (int i = STACK_START_TO_PRINT; i < TOTAL_STACK; ++i) {
+          lock_info.addrs[i - STACK_START_TO_PRINT] = addrs[i];
+        }
     }
+}
+
+void print_lock_record(const LockInfo& info) {
+    std::lock_guard<std::mutex> l(printmtx);
+    std::cout << format_time(info.timestamp)
+              << " thread " << info.threadidx
+              << " node " << info.node
+              << " (g" << info.gen
+              << " c" << info.slotuse
+              << ") (r" << info.numreader
+              << "|w" << info.haswriter
+              << " waiter:r" << info.readerswaiting
+              << "|w" << info.writerswaiting
+              << "|u" << info.upgradewaiting
+              << ") "
+              << lock_type_to_string(info.lock_type)
+              << " "
+              << stack_sym(info.addrs)
+              << std::endl;
+}
+
+void print_all_lock_records() {
+  for (const auto& info: debug_lock_info) {
+    print_lock_record(info);
+  }
 }
 
 void print_threads_states(void)
 {
-    if (!debug_print) return;
     my_multi_thread_set.print(std::cout);
     for (int i = 0; i < cur_numthreads; ++i) {
         std::cout << "Thread " << i + thread_start_idx << " id: " << global_thread_info[i].id
@@ -2091,6 +2158,7 @@ void before_assert(void)
     static bool tree_printed = false;
     if (!tree_printed) { // only print once
         tree_printed = true;
+        print_all_lock_records();
         std::lock_guard<std::mutex> l(printmtx);
         std::cout << "======= print thread state before assert =======\n";
         print_threads_states();

@@ -44,7 +44,6 @@ struct thread_debug_info {
 };
 
 extern std::string format_current_time(void);
-extern std::string stack_sym(int start_stack=3, int num_stacks=4);
 
 // Thread-local storage for each thread's debug information
 thread_local thread_debug_info local_debug_info;
@@ -1618,7 +1617,7 @@ private:
             std::allocator_traits<typename InnerNode::alloc_type>::deallocate(a, in, 1);
             stats_.inner_nodes--;
             std::lock_guard<std::mutex> printlock(printmtx);
-            if (debug_print && cur_numthreads > 1) 
+            if (debug_print && cur_numthreads > 1)
                 std::cout << format_current_time() << " free inner " << n
                       << " #inner=" << stats_.inner_nodes
                       << " #leaves=" << stats_.leaves << std::endl;
@@ -1863,7 +1862,7 @@ public:
     //! (find(k) != end()) or (count() != 0).
     bool exists(const key_type& key) const {
         root_->lock->readlock();
-        
+
         if (root_->level == 0) {
             root_->lock->read_unlock();
             return false;
@@ -2320,7 +2319,7 @@ private:
 
             InnerNode* leftchild = allocate_inner(root_->level);
             leftchild->lock->writelock(false);
-            
+
             // copy root into leftchild
             std::copy(root_->slotkey, root_->slotkey + root_->slotuse,
                     leftchild->slotkey);
@@ -2941,7 +2940,7 @@ private:
         if (root_->slotuse == 0) {
             root_->childid[0]->lock->readlock();
             LeafNode* child = static_cast<LeafNode*>(root_->childid[0]);
-            
+
             if (child->slotuse == 1) {
                 if (key_equal(child->key(0), key)) {
                     child->lock->read_unlock();
@@ -2968,7 +2967,7 @@ private:
                 root_->childid[0]->lock->read_unlock();
             }
         }
-        
+
         // if the root only has one child,
         // root_ will only point to one node, and therefore should
         // be skipped in erase_one_descend
@@ -2980,8 +2979,8 @@ private:
 
             node* leftchild = root_->childid[0];
             node* rightchild = root_->childid[1];
-            
-            auto slotmax = 
+
+            auto slotmax =
                     leftchild->is_leafnode() ? leaf_slotmax : inner_slotmax;
             if (leftchild->slotuse + rightchild->slotuse < slotmax)
             {
