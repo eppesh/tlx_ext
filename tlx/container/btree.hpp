@@ -93,6 +93,8 @@ extern void record_lock(void* node, int lock_type);
 
 extern int cur_numthreads;
 
+extern const bool debug_print;
+
 namespace tlx {
 
 //! \addtogroup tlx_container
@@ -354,7 +356,7 @@ public:
         }
 
 #define DBGPRT() \
-        if (/*nodep->is_leafnode()*/ false) { \
+        if (false && debug_print && nodep->level == 0) { \
             std::lock_guard<std::mutex> printlock(printmtx); \
             std::cout << __func__ << " " << seq++ << ": node=" << nodep << " "; \
             print_node(std::cout, nodep); \
@@ -504,6 +506,7 @@ public: // XXX
 
         //! True if this is a leaf node.
         bool is_leafnode() const {
+            //TLX_BTREE_ASSERT(lock->treep->root_ != this);
             return (level == 0);
         }
 
@@ -1381,8 +1384,9 @@ private:
 
     //! Pointer to the B+ tree's root node. If there is only one leaf
     //! node in the tree, it will point to that node.
-    InnerNode* root_;
-
+    public:
+    InnerNode* root_; // TODO
+    private:
     //! Pointer to first leaf in the double linked leaf chain.
     LeafNode* head_leaf_;
 
@@ -1569,7 +1573,7 @@ private:
         stats_.leaves++;
         std::lock_guard<std::mutex> printlock(printmtx);
 
-        if (cur_numthreads > 1) {
+        if (debug_print && cur_numthreads > 1) {
             std::cout << format_current_time() << " alloc leaf " << n
                   << " #inner=" << stats_.inner_nodes
                   << " #leaves=" << stats_.leaves << std::endl;
@@ -1583,7 +1587,7 @@ private:
         n->initialize(level);
         stats_.inner_nodes++;
         std::lock_guard<std::mutex> printlock(printmtx);
-        if (cur_numthreads > 1) {
+        if (debug_print && cur_numthreads > 1) {
             std::cout << format_current_time() << " alloc inner " << n
                   << " #inner=" << stats_.inner_nodes
                   << " #leaves=" << stats_.leaves << std::endl;
@@ -1602,7 +1606,7 @@ private:
             std::allocator_traits<typename LeafNode::alloc_type>::deallocate(a, ln, 1);
             stats_.leaves--;
             std::lock_guard<std::mutex> printlock(printmtx);
-            if (cur_numthreads > 1)
+            if (debug_print && cur_numthreads > 1)
                 std::cout << format_current_time() << " free leaf " << n
                       << " #inner=" << stats_.inner_nodes
                       << " #leaves=" << stats_.leaves << std::endl;
@@ -1614,7 +1618,7 @@ private:
             std::allocator_traits<typename InnerNode::alloc_type>::deallocate(a, in, 1);
             stats_.inner_nodes--;
             std::lock_guard<std::mutex> printlock(printmtx);
-            if (cur_numthreads > 1) 
+            if (debug_print && cur_numthreads > 1) 
                 std::cout << format_current_time() << " free inner " << n
                       << " #inner=" << stats_.inner_nodes
                       << " #leaves=" << stats_.leaves << std::endl;
@@ -2212,7 +2216,7 @@ public:
         do {
             tries++;
             res = insert_start(key_of_value::get(x), x);
-            if (res.retry) {
+            if (res.retry && debug_print) {
                 std::lock_guard<std::mutex> printlock(printmtx);
                 std::cout << format_current_time() << " retry insert_start "
                           << std::endl;
@@ -2227,7 +2231,7 @@ public:
         insert_res res;
         do {
             res = insert_start(key_of_value::get(x), x);
-            if (res.retry) {
+            if (res.retry && debug_print) {
                 std::lock_guard<std::mutex> printlock(printmtx);
                 std::cout << format_current_time() << " retry insert_start "
                           << std::endl;
@@ -2853,7 +2857,7 @@ public:
         result_flags_t res;
         do {
             res = erase_one_start(key);
-            if (res == restart) {
+            if (res == restart && debug_print) {
                 std::lock_guard<std::mutex> printlock(printmtx);
                 std::cout << format_current_time() << " retry erase_one_start "
                           << key << std::endl;
@@ -3189,7 +3193,7 @@ private:
                                 slot != fake_slot) {
                             slot--;
                         }
-                    } else if (slot != fake_slot) { // && rightchild->slotuse == 0
+                    } else if (slot != fake_slot) { // && rightchild == nullptr
                         slot--;
                     }
 
@@ -3249,7 +3253,8 @@ private:
                     }
 
                     TLX_BTREE_PRINT("erase one descend: inner redistribute");
-                    redistribute_inner_children(parent, leftchild, &rightchild, fake_slot);
+                    result_flags_t r = redistribute_inner_children(parent, leftchild, &rightchild, fake_slot);
+                    if (r == restart) return r;
 
                     if (rightchild != nullptr) {
                         // assuming merge didn't happen
@@ -3260,7 +3265,7 @@ private:
                                 slot != fake_slot) {
                             slot--;
                         }
-                    } else if (slot != fake_slot) { // && rightchild->slotuse == 0
+                    } else if (slot != fake_slot) { // && rightchild == nullptr
                         slot--;
                     }
 
@@ -3355,7 +3360,7 @@ private:
 
     // Redistributes/merges the keys of two adjacent inner children of the parent.
     // It is assumed that the children need rebalancing/merging.
-    void redistribute_inner_children(InnerNode* parent, InnerNode* leftchild,
+    result_flags_t redistribute_inner_children(InnerNode* parent, InnerNode* leftchild,
                                     InnerNode** rightchildp, unsigned int parentslot) {
         InnerNode* rightchild = *rightchildp;
         TLX_BTREE_PRINT("redistribute_inner_children(" << parent << "," << leftchild
@@ -3373,6 +3378,14 @@ private:
         if ( (leftchild->is_few() && rightchild->is_underflow())
             || (leftchild->is_underflow() && rightchild->is_few()))
         {
+            if (parent == root_ && parent->slotuse <= 1) {
+                TLX_BTREE_ASSERT(parent->slotuse == 1);
+                parent->lock->write_unlock();
+                leftchild->lock->write_unlock();
+                rightchild->lock->write_unlock();
+                return restart;
+            }
+
             merge_inner(leftchild, rightchild, parent, parentslot);
 
             TLX_BTREE_ASSERT(rightchild->slotuse == 0);
@@ -3424,6 +3437,7 @@ private:
             rightchild->gen++;
             rightchild->lock->downgrade_lock();
         }
+        return btree_ok;
     }
 
 #if 0
@@ -4125,7 +4139,7 @@ public:
     //! function requires that the header is compiled with TLX_BTREE_DEBUG and
     //! that key_type is printable via std::ostream.
     void print(std::ostream& os) const {
-        if (root_ && root_->level == 0) {
+        if (root_->level > 0) {
             print_node(os, root_, 0, true);
         }
     }
@@ -4150,6 +4164,11 @@ private:
     //! Recursively descend down the tree and print out nodes.
     static void print_node(std::ostream& os, const node* node,
                            unsigned int depth = 0, bool recursive = false) {
+        if (node->level == 0 && node->slotuse == 0) {
+            os << "empty tree" << std::endl;
+            return;
+        }
+
         for (unsigned int i = 0; i < depth; i++) os << "  ";
 
         os << "node " << node << " level " << node->level <<

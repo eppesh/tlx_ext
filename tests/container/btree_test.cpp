@@ -215,7 +215,6 @@ struct SimpleTest {
             btree_type btree;
             int n = 100;
 
-            //std::cout << __func__ << " seed: " << seed << std::endl;
             std::mt19937 gen(seed);
 
             std::vector<int> v(n);
@@ -1977,7 +1976,7 @@ typedef tlx::btree_set<
         std::less<unsigned int>, traits_nodebug<unsigned int> > set_type;
 
 const int MAX_KEY = 100;
-const int NUM_OPERATIONS = 100;
+const int NUM_OPERATIONS = 10000;
 
 struct Entry {
     std::mutex mtx;
@@ -1993,6 +1992,7 @@ set_type my_multi_thread_set;
 const int NUM_THREADS = 16;
 int cur_numthreads = 1;
 const int thread_start_idx = 2;
+const bool debug_print = false;
 
 // Global array of thread information
 std::vector<thread_info> global_thread_info(NUM_THREADS);
@@ -2000,6 +2000,7 @@ std::atomic<int> thread_count(0);
 std::map<std::thread::id, int> thread_id_map;
 
 void record_lock(void* node, int lock_type) {
+    if (!debug_print) return;
     if (cur_numthreads > 1 && local_debug_info.tinfo) {
         local_debug_info.tinfo->cur_node = node;
         local_debug_info.tinfo->op = lock_type;
@@ -2008,7 +2009,9 @@ void record_lock(void* node, int lock_type) {
         set_type::btree_impl::node *nodep = static_cast<set_type::btree_impl::node *>(node);
         std::cout << format_current_time() << " thread " <<
           local_debug_info.tinfo->threadidx << " node "
-                  << node << " (r" << nodep->lock->numreader
+                  << node << " (g" << nodep->gen
+                  << " c" << nodep->slotuse
+                  << ") (r" << nodep->lock->numreader
                   << "|w" << nodep->lock->haswriter
                   << " waiter:r" << nodep->lock->readerswaiting
                   << "|w" << nodep->lock->writerswaiting
@@ -2021,6 +2024,7 @@ void record_lock(void* node, int lock_type) {
 
 void print_threads_states(void)
 {
+    if (!debug_print) return;
     my_multi_thread_set.print(std::cout);
     for (int i = 0; i < cur_numthreads; ++i) {
         std::cout << "Thread " << i + thread_start_idx << " id: " << global_thread_info[i].id
@@ -2030,14 +2034,26 @@ void print_threads_states(void)
         if (global_thread_info[i].cur_node) {
             set_type::btree_impl::node *nodep = static_cast<set_type::btree_impl::node *>(global_thread_info[i].cur_node);
             auto lock = nodep->lock;
-            std::cout << "  curread: ";
-            for (auto id: lock->curread) {
-                std::cout << thread_id_map[id] << ' ';
+            if (lock == nullptr) {
+                std::cout << "  lock=null\n";
+                continue;
             }
+            std::cout << "  curread: ";
+            std::set<int> ids; // print all ids in order
+            for (auto id: lock->curread) {
+                ids.insert(thread_id_map[id]);
+            }
+            for (auto id: ids) {
+                std::cout << id << ' ';
+            }
+            ids.clear();
             std::cout << std::endl;
             std::cout << "  curwrite: ";
             for (auto id: lock->curwrite) {
-                std::cout << thread_id_map[id] << ' ';
+                ids.insert(thread_id_map[id]);
+            }
+            for (auto id: ids) {
+                std::cout << id << ' ';
             }
             std::cout << std::endl;
         }
@@ -2086,6 +2102,7 @@ void before_assert(void)
 }
 
 void print(const char* op, int val, int id) {
+    if (!debug_print) return;
     std::lock_guard<std::mutex> l(printmtx);
     std::cout << seqnum++ << ": thread " << id << " doing " << op
         << " value: " << val << std::endl;
@@ -2135,24 +2152,19 @@ void thread_func(set_type& my_set, int insert_prob, int lookup_prob, int delete_
 
 void test_multithread() {
     // Probability out of 100
-    int insert_prob = 40;
-    int lookup_prob = 40;
-    int delete_prob = 20;
-
+    int insert_prob = 34;
+    int lookup_prob = 33;
+    int delete_prob = 33;
+    cur_numthreads = NUM_THREADS; // for debug printing TODO
     // Register signal handler for SIGUSR1
     std::signal(SIGUSR1, signal_handler);
 
-    while (cur_numthreads <= NUM_THREADS) {
-        std::vector<std::thread> threads;
-        for (int i = 0; i < cur_numthreads; ++i) {
-            threads.emplace_back(thread_func, std::ref(my_multi_thread_set), insert_prob, lookup_prob, delete_prob, i);
-        }
-
-        for (auto& th : threads) {
-            th.join();
-        }
-
-        cur_numthreads++;
+    std::vector<std::thread> threads;
+    for (int i = 0; i < NUM_THREADS; ++i) {
+        threads.emplace_back(thread_func, std::ref(my_multi_thread_set), insert_prob, lookup_prob, delete_prob, i);
+    }
+    for (auto& th : threads) {
+        th.join();
     }
 }
 
