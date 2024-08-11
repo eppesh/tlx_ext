@@ -45,7 +45,7 @@ static const bool test_multi = false;
 static const bool multithread = true;
 static const auto seed = std::random_device{}();
 
-const int STACK_START_TO_PRINT = 2;
+const int STACK_START_TO_PRINT = 3;
 const int NUM_STACK_TO_PRINT = 4;
 
 std::string format_time(
@@ -2003,90 +2003,165 @@ set_type my_multi_thread_set;
 const int NUM_THREADS = 16;
 int cur_numthreads = 1;
 const int thread_start_idx = 2;
-const bool debug_print = false;
+const bool debug_print = true;
 
 // Global array of thread information
 std::vector<thread_info> global_thread_info(NUM_THREADS);
 std::atomic<int> thread_count(0);
 std::map<std::thread::id, int> thread_id_map;
 
-struct LockInfo {
-  std::chrono::time_point<std::chrono::system_clock> timestamp;
-  int threadidx;
-  void *node;
-  int gen;
-  unsigned short slotuse;
-  unsigned int numreader;
-  bool haswriter;
-  int writerswaiting = 0;
-  int readerswaiting = 0;
-  int upgradewaiting = 0;
-  int lock_type;
-  void *addrs[NUM_STACK_TO_PRINT];
+enum LogType {
+    LOG_LOCK,
+    LOG_MEM_OP,
+};
+
+struct LogInfo {
+    LogType logtype;
+    std::chrono::time_point<std::chrono::system_clock> timestamp;
+    void *addrs[NUM_STACK_TO_PRINT];
+    int threadidx;
+    void *node;
+
+    union {
+        struct { // LOG_LOCK
+            int gen;
+            unsigned short level;
+            unsigned short slotuse;
+            unsigned int numreader;
+            bool haswriter;
+            int writerswaiting;
+            int readerswaiting;
+            int upgradewaiting;
+            int lock_type;
+        };
+        struct { // LOG_MEM_OP
+            MemOpType mem_op_type;
+            int num_inner;
+            int num_leaves;
+        };
+    };
 };
 
 enum {
-  TOTAL_DEBUG_LOCK_INFO = 2000
+    TOTAL_DEBUG_LOG_INFO = 10000
 };
-std::vector<LockInfo> debug_lock_info(TOTAL_DEBUG_LOCK_INFO);
-std::atomic<size_t> cur_debug_lock_info = 0;
+std::vector<LogInfo> debug_log_info(TOTAL_DEBUG_LOG_INFO);
+std::atomic<size_t> cur_debug_log_info = 0;
+
+void get_stack_addr(void *out_addrs[NUM_STACK_TO_PRINT]) {
+    const int TOTAL_STACK =
+        STACK_START_TO_PRINT + NUM_STACK_TO_PRINT;
+    void *addrs[TOTAL_STACK];
+
+    backtrace(addrs, TOTAL_STACK);
+    for (int i = STACK_START_TO_PRINT; i < TOTAL_STACK; ++i) {
+        out_addrs[i - STACK_START_TO_PRINT] = addrs[i];
+    }
+}
+
+void record_mem_op(MemOpType optype, void *node,
+                   int num_inner, int num_leaves) {
+    if (debug_log_info.empty())
+        return;
+        
+    size_t idx = cur_debug_log_info.fetch_add(
+        1, std::memory_order_relaxed);
+
+    LogInfo& log_info = debug_log_info[idx % TOTAL_DEBUG_LOG_INFO];
+    log_info.logtype = LOG_MEM_OP;
+    log_info.node = node;
+    log_info.mem_op_type = optype;
+    log_info.timestamp = std::chrono::system_clock::now();
+    log_info.threadidx = local_debug_info.tinfo ?
+        local_debug_info.tinfo->threadidx : 0;
+    log_info.num_inner = num_inner;
+    log_info.num_leaves = num_leaves;
+
+    get_stack_addr(log_info.addrs);
+}
 
 void record_lock(void* node, int lock_type) {
     if (cur_numthreads > 1 && local_debug_info.tinfo) {
         local_debug_info.tinfo->cur_node = node;
         local_debug_info.tinfo->op = lock_type;
 
-        size_t idx = cur_debug_lock_info.fetch_add(
-          1, std::memory_order_relaxed);
+        size_t idx = cur_debug_log_info.fetch_add(
+            1, std::memory_order_relaxed);
 
-        LockInfo& lock_info = debug_lock_info[idx];
-        lock_info.timestamp = std::chrono::system_clock::now();
-        lock_info.threadidx = local_debug_info.tinfo->threadidx;
-        lock_info.node = node;
+        LogInfo& log_info = debug_log_info[idx % TOTAL_DEBUG_LOG_INFO];
+        log_info.logtype = LOG_LOCK;
+        log_info.timestamp = std::chrono::system_clock::now();
+        log_info.threadidx = local_debug_info.tinfo->threadidx;
+        log_info.node = node;
 
         set_type::btree_impl::node *nodep =
-          static_cast<set_type::btree_impl::node *>(node);
-        lock_info.gen = nodep->gen;
-        lock_info.slotuse = nodep->slotuse;
-        lock_info.numreader = nodep->lock->numreader;
-        lock_info.haswriter = nodep->lock->haswriter;
-        lock_info.readerswaiting = nodep->lock->readerswaiting;
-        lock_info.writerswaiting = nodep->lock->writerswaiting;
-        lock_info.upgradewaiting = nodep->lock->upgradewaiting;
-        lock_info.lock_type = lock_type;
+            static_cast<set_type::btree_impl::node *>(node);
+        log_info.gen = nodep->gen;
+        log_info.level = nodep->level;
+        log_info.slotuse = nodep->slotuse;
+        log_info.numreader = nodep->lock->numreader;
+        log_info.haswriter = nodep->lock->haswriter;
+        log_info.readerswaiting = nodep->lock->readerswaiting;
+        log_info.writerswaiting = nodep->lock->writerswaiting;
+        log_info.upgradewaiting = nodep->lock->upgradewaiting;
+        log_info.lock_type = lock_type;
 
-        const int TOTAL_STACK =
-          STACK_START_TO_PRINT + NUM_STACK_TO_PRINT;
-        void *addrs[TOTAL_STACK];
-        backtrace(addrs, TOTAL_STACK);
-        for (int i = STACK_START_TO_PRINT; i < TOTAL_STACK; ++i) {
-          lock_info.addrs[i - STACK_START_TO_PRINT] = addrs[i];
-        }
+        get_stack_addr(log_info.addrs);
     }
 }
 
-void print_lock_record(const LockInfo& info) {
-    std::lock_guard<std::mutex> l(printmtx);
-    std::cout << format_time(info.timestamp)
-              << " thread " << info.threadidx
-              << " node " << info.node
-              << " (g" << info.gen
-              << " c" << info.slotuse
-              << ") (r" << info.numreader
-              << "|w" << info.haswriter
-              << " waiter:r" << info.readerswaiting
-              << "|w" << info.writerswaiting
-              << "|u" << info.upgradewaiting
-              << ") "
-              << lock_type_to_string(info.lock_type)
-              << " "
-              << stack_sym(info.addrs)
-              << std::endl;
+const char *MemOpName[] = {
+    "alloc inner",
+    "alloc leaf",
+    "free inner",
+    "free leaf"
+};
+
+void print_lock_record(const LogInfo& info) {
+    std::lock_guard<std::mutex> printlock(printmtx);
+    switch (info.logtype) {
+    case LOG_LOCK:
+        if (info.node == 0) return;
+
+        std::cout << format_time(info.timestamp)
+                  << " thread " << info.threadidx
+                  << " node " << info.node
+                  << " (g" << info.gen
+                  << " c" << info.slotuse
+                  << " L" << info.level
+                  << ") (r" << info.numreader
+                  << "|w" << info.haswriter
+                  << " waiter:r" << info.readerswaiting
+                  << "|w" << info.writerswaiting
+                  << "|u" << info.upgradewaiting
+                  << ") "
+                  << lock_type_to_string(info.lock_type)
+                  << " "
+                  << stack_sym(info.addrs)
+                  << std::endl;
+        break;
+    case LOG_MEM_OP:
+        std::cout << format_time(info.timestamp)
+                  << " " << MemOpName[info.mem_op_type]
+                  << " " << info.node
+                  << " #inner=" << info.num_inner
+                  << " #leaves=" << info.num_leaves
+                  << " "
+                  << stack_sym(info.addrs)
+                  << std::endl;
+        break;
+    }
 }
 
 void print_all_lock_records() {
-  for (const auto& info: debug_lock_info) {
-    print_lock_record(info);
+  size_t i;
+  size_t cur_index = cur_debug_log_info % TOTAL_DEBUG_LOG_INFO;
+  for (i = cur_index; i < debug_log_info.size(); ++i) {
+    print_lock_record(debug_log_info[i]);
+  }
+
+  for (i = 0; i < cur_index; ++i) {
+    print_lock_record(debug_log_info[i]);
   }
 }
 
@@ -2130,6 +2205,7 @@ void print_threads_states(void)
 void signal_handler(int signum) {
     if (signum == SIGUSR1) {
         std::cout << "Received SIGUSR1. Current thread states:\n";
+        print_all_lock_records();
         print_threads_states();
     } else {
         std::cout << "Received signal " << signum << std::endl;
