@@ -95,8 +95,9 @@ enum MemOpType {
   FREE_LEAF,
 };
 
-extern void record_lock(void *node, int lock_type);
-extern void record_mem_op(MemOpType optype,void *node, int num_inner, int num_leaves);
+extern void log_lock(void *node, int lock_type);
+extern void log_mem_op(MemOpType optype,void *node, int num_inner, int num_leaves);
+extern void log_retry(void );
 
 extern int cur_numthreads;
 
@@ -385,7 +386,7 @@ public:
 #endif
 
         void readlock(bool verify = true) {
-            record_lock(nodep, lock_type_read);
+            log_lock(nodep, lock_type_read);
             lock_type lock(mutex);
             addtoread();
             if (haswriter || hasdowngrader
@@ -401,12 +402,12 @@ public:
             }
             numreader++;
             if (verify) treep->verify_one_node(nodep);
-            record_lock(nodep, lock_type_read_got);
+            log_lock(nodep, lock_type_read_got);
             DBGPRT();
         }
 
         void upgradelock() {
-            record_lock(nodep, lock_type_upgrade);
+            log_lock(nodep, lock_type_upgrade);
             lock_type lock(mutex);
             delfromread(false);
             addtowrite();
@@ -420,12 +421,12 @@ public:
                 upgradewaiting--;
             }
             haswriter = true;
-            record_lock(nodep, lock_type_upgrade_got);
+            log_lock(nodep, lock_type_upgrade_got);
             DBGPRT();
         }
 
         void writelock(bool verify = true) {
-            record_lock(nodep, lock_type_write);
+            log_lock(nodep, lock_type_write);
             lock_type lock(mutex);
             addtowrite();
             if (numreader > 0 || haswriter || upgradewaiting > 0) {
@@ -439,12 +440,12 @@ public:
             TLX_BTREE_ASSERT(!haswriter);
             haswriter = true;
             if (verify) treep->verify_one_node(nodep);
-            record_lock(nodep, lock_type_write_got);
+            log_lock(nodep, lock_type_write_got);
             DBGPRT();
         }
 
         void read_unlock(bool verify = true) {
-            record_lock(nodep, lock_type_read_unlock);
+            log_lock(nodep, lock_type_read_unlock);
             lock_type lock(mutex);
             delfromread(verify);
             TLX_BTREE_ASSERT(numreader >= 1);
@@ -461,7 +462,7 @@ public:
         }
 
         void write_unlock(bool verify = true) {
-            record_lock(nodep, lock_type_write_unlock);
+            log_lock(nodep, lock_type_write_unlock);
             lock_type lock(mutex);
             delfromwrite(verify);
             TLX_BTREE_ASSERT(haswriter);
@@ -477,7 +478,7 @@ public:
         }
 
         void downgrade_lock() {
-            record_lock(nodep, lock_type_downgrade);
+            log_lock(nodep, lock_type_downgrade);
             lock_type lock(mutex);
             TLX_BTREE_ASSERT(haswriter);
             addtoread();
@@ -1594,7 +1595,7 @@ private:
         LeafNode* n = new (leaf_node_allocator().allocate(1)) LeafNode(this);
         n->initialize();
         stats_.leaves++;
-        record_mem_op(ALLOC_LEAF, n, stats_.inner_nodes,
+        log_mem_op(ALLOC_LEAF, n, stats_.inner_nodes,
                       stats_.leaves);
         return n;
     }
@@ -1604,7 +1605,7 @@ private:
         InnerNode* n = new (inner_node_allocator().allocate(1)) InnerNode(this);
         n->initialize(level);
         stats_.inner_nodes++;
-        record_mem_op(ALLOC_INNER, n, stats_.inner_nodes,
+        log_mem_op(ALLOC_INNER, n, stats_.inner_nodes,
                       stats_.leaves);
         return n;
     }
@@ -1620,7 +1621,7 @@ private:
             std::allocator_traits<typename LeafNode::alloc_type>::destroy(a, ln);
             std::allocator_traits<typename LeafNode::alloc_type>::deallocate(a, ln, 1);
             stats_.leaves--;
-            record_mem_op(FREE_LEAF, n, stats_.inner_nodes,
+            log_mem_op(FREE_LEAF, n, stats_.inner_nodes,
                           stats_.leaves);
         }
         else {
@@ -1629,7 +1630,7 @@ private:
             std::allocator_traits<typename InnerNode::alloc_type>::destroy(a, in);
             std::allocator_traits<typename InnerNode::alloc_type>::deallocate(a, in, 1);
             stats_.inner_nodes--;
-            record_mem_op(FREE_INNER, n, stats_.inner_nodes,
+            log_mem_op(FREE_INNER, n, stats_.inner_nodes,
                           stats_.leaves);
         }
     }
@@ -2225,10 +2226,8 @@ public:
         do {
             tries++;
             res = insert_start(key_of_value::get(x), x);
-            if (res.retry && debug_print) {
-                std::lock_guard<std::mutex> printlock(printmtx);
-                std::cout << format_current_time() << " retry insert_start "
-                          << std::endl;
+            if (res.retry) {
+                log_retry();
             }
         } while (res.retry);
         return std::make_pair(res.it, res.inserted);
@@ -2240,10 +2239,8 @@ public:
         insert_res res;
         do {
             res = insert_start(key_of_value::get(x), x);
-            if (res.retry && debug_print) {
-                std::lock_guard<std::mutex> printlock(printmtx);
-                std::cout << format_current_time() << " retry insert_start "
-                          << std::endl;
+            if (res.retry) {
+                log_retry();
             }
         } while (res.retry);
         return res.it;
@@ -2871,10 +2868,8 @@ public:
         result_flags_t res;
         do {
             res = erase_one_start(key);
-            if (res == restart && debug_print) {
-                std::lock_guard<std::mutex> printlock(printmtx);
-                std::cout << format_current_time() << " retry erase_one_start "
-                          << key << std::endl;
+            if (res == restart) {
+                log_retry();
             }
         } while (res == restart);
 

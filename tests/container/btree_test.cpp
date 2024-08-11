@@ -2013,6 +2013,7 @@ std::map<std::thread::id, int> thread_id_map;
 enum LogType {
     LOG_LOCK,
     LOG_MEM_OP,
+    LOG_RETRY,
 };
 
 struct LogInfo {
@@ -2059,11 +2060,23 @@ void get_stack_addr(void *out_addrs[NUM_STACK_TO_PRINT]) {
     }
 }
 
-void record_mem_op(MemOpType optype, void *node,
-                   int num_inner, int num_leaves) {
+void log_retry() {
     if (debug_log_info.empty())
         return;
-        
+
+    size_t idx = cur_debug_log_info.fetch_add(
+        1, std::memory_order_relaxed);
+
+    LogInfo& log_info = debug_log_info[idx % TOTAL_DEBUG_LOG_INFO];
+    log_info.logtype = LOG_RETRY;
+    get_stack_addr(log_info.addrs);
+}
+
+void log_mem_op(MemOpType optype, void *node,
+                int num_inner, int num_leaves) {
+    if (debug_log_info.empty())
+        return;
+
     size_t idx = cur_debug_log_info.fetch_add(
         1, std::memory_order_relaxed);
 
@@ -2080,7 +2093,7 @@ void record_mem_op(MemOpType optype, void *node,
     get_stack_addr(log_info.addrs);
 }
 
-void record_lock(void* node, int lock_type) {
+void log_lock(void* node, int lock_type) {
     if (cur_numthreads > 1 && local_debug_info.tinfo) {
         local_debug_info.tinfo->cur_node = node;
         local_debug_info.tinfo->op = lock_type;
@@ -2147,6 +2160,12 @@ void print_lock_record(const LogInfo& info) {
                   << " #inner=" << info.num_inner
                   << " #leaves=" << info.num_leaves
                   << " "
+                  << stack_sym(info.addrs)
+                  << std::endl;
+        break;
+    case LOG_RETRY:
+        std::cout << format_time(info.timestamp)
+                  << " retry "
                   << stack_sym(info.addrs)
                   << std::endl;
         break;
