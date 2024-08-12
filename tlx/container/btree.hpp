@@ -1887,8 +1887,8 @@ public:
             unsigned short slot = find_lower(inner, key);
 
             inner->childid[slot]->lock->readlock();
-            inner->lock->read_unlock();
             n = inner->childid[slot];
+            inner->lock->read_unlock();
         }
 
         const LeafNode* leaf = static_cast<const LeafNode*>(n);
@@ -2417,11 +2417,11 @@ private:
             //TLX_BTREE_PRINT(
                 //"BTree::insert_descend into " << inner->childid[slot]);
 
-            n->lock->read_unlock();
+            n = inner->childid[slot];
+            inner->lock->read_unlock();
 
             insert_res r =
-                insert_descend(inner->childid[slot],
-                               key, value);
+                insert_descend(n, key, value);
 
             return r;
         }
@@ -2967,6 +2967,8 @@ private:
                     root_->gen++;
                     root_->level = 0;
                     stats_.size--;
+                    
+                    root_->lock->write_unlock();
                     return btree_ok;
                 } else {
                     root_->lock->read_unlock();
@@ -3281,8 +3283,10 @@ private:
             }
 
             //if (self_verify) verify();
+
+            curr = parent->childid[slot];
             parent->lock->read_unlock();
-            return erase_one_descend(key, parent->childid[slot]);
+            return erase_one_descend(key, curr);
         }
     }
 

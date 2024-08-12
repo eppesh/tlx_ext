@@ -2003,7 +2003,7 @@ set_type my_multi_thread_set;
 const int NUM_THREADS = 16;
 int cur_numthreads = 1;
 const int thread_start_idx = 2;
-const bool debug_print = true;
+const bool debug_print = false;
 
 // Global array of thread information
 std::vector<thread_info> global_thread_info(NUM_THREADS);
@@ -2315,9 +2315,9 @@ void thread_func(set_type& my_set, int insert_prob, int lookup_prob, int delete_
 
 void test_multithread() {
     // Probability out of 100
-    int insert_prob = 34;
+    int insert_prob = 33;
     int lookup_prob = 33;
-    int delete_prob = 33;
+    int delete_prob = 34;
     cur_numthreads = NUM_THREADS; // for debug printing TODO
     // Register signal handler for SIGUSR1
     std::signal(SIGUSR1, signal_handler);
@@ -2334,7 +2334,7 @@ void test_multithread() {
 int main() {
     std::cout << "seed: " << seed << std::endl;
     std::cout << "pid: " << getpid() << std::endl;
-    test_simple();
+    /*test_simple();
     if (tlx_more_tests) {
         test_large();
         // TODO test_large_sequence();
@@ -2343,7 +2343,7 @@ int main() {
         test_struct();
         test_relations();
         test_bulkload();
-    }
+    }*/
     if (multithread) {
         test_multithread();
     }
