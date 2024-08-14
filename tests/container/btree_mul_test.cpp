@@ -80,6 +80,12 @@ class TlxBTreeTest {
                   << ",Mops/s" << std::endl;
         std::cout << "Data size: " << data_.size()
                   << "; elpased time(s): " << duration.count() << std::endl;
+        // test
+        btree.verify();
+        for (auto it = btree.begin(); it != btree.end(); ++it) {
+            std::cout << it->first << ",";
+        }
+        std::cout << std::endl;
     }
 
     static void WriteThreadTask(tlx::btree_map<KeyType, KeyType>& btree,
@@ -109,7 +115,7 @@ int main() {
         std::cerr << "data is empty" << std::endl;
         return 0;
     }
-    std::vector<int> thread_counts = {2};  // 1, 2, 4, 8
+    std::vector<int> thread_counts = {4};  // 1, 2, 4, 8
     for (int num_threads : thread_counts) {
         std::cout << "Number of threads: " << num_threads << std::endl;
         TlxBTreeTest<uint64_t> test(data, num_threads);
