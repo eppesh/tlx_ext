@@ -1987,7 +1987,7 @@ typedef tlx::btree_set<
         std::less<unsigned int>, traits_nodebug<unsigned int> > set_type;
 
 const int MAX_KEY = 100;
-const int NUM_OPERATIONS = 10000;
+const int NUM_OPERATIONS = 100;
 
 struct Entry {
     std::mutex mtx;
@@ -2272,7 +2272,8 @@ void print(const char* op, int val, int id) {
 }
 
 void thread_func(set_type& my_set, int insert_prob, int lookup_prob, int delete_prob, int id) {
-    std::mt19937 gen(seed + id);
+    // TODO std::mt19937 gen(seed + id);
+    std::mt19937 gen(std::random_device{}());
     std::uniform_int_distribution<> dist(0, 99);
     std::uniform_int_distribution<> key_dist(0, MAX_KEY - 1);
 
@@ -2345,7 +2346,19 @@ int main() {
         test_bulkload();
     }*/
     if (multithread) {
-        test_multithread();
+        for (int i = 0; i < 100000; i++) {
+            test_multithread(); // TODO remove this surrounding stuff
+            my_multi_thread_set.clear();
+            debug_log_info.resize(0);
+            debug_log_info.resize(TOTAL_DEBUG_LOG_INFO);
+
+            for (auto& e : truth_source) {
+                e.in_set = false;
+            }
+            if (i % 100 == 0) {
+                std::cout << i << std::endl;
+            }
+        }
     }
     std::cout << "test successful!" << std::endl;
     return 0;

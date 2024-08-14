@@ -1,13 +1,3 @@
-/*******************************************************************************
- * tests/container/btree_speedtest.cpp
- *
- * Part of tlx - http://panthema.net/tlx
- *
- * Copyright (C) 2008-2018 Timo Bingmann <tb@panthema.net>
- *
- * All rights reserved. Published under the Boost Software License, Version 1.0
- ******************************************************************************/
-
 #include <chrono>
 #include <cstdlib>
 #include <iomanip>
@@ -15,14 +5,8 @@
 #include <random>
 #include <string>
 
-#include <set>
-#include <tlx/container/btree_multiset.hpp>
-#include <tlx/container/splay_tree.hpp>
-#include <unordered_set>
-
-#include <map>
-#include <tlx/container/btree_multimap.hpp>
-#include <unordered_map>
+#include <tlx/container/btree_set.hpp>
+#include <tlx/container/btree_map.hpp>
 
 #include <tlx/die.hpp>
 #include <tlx/timestamp.hpp>
@@ -35,11 +19,11 @@ const size_t min_items = 125;
 //! maximum number of items to insert
 const size_t max_items = 1024000 * 64;
 
-//! random seed
-const int seed = 34234235;
+//! number of threads operating at a time
+const int num_threads = 16; 
 
-//! whether or not to use multiset/multimap
-const bool use_multi = false;
+//! random seed
+const int seed = 34234235; //std::random_device{}();
 
 //! Traits used for the speed tests, BTREE_DEBUG is not defined.
 template <int InnerSlots, int LeafSlots>
@@ -64,27 +48,38 @@ public:
 
     static const char * op() { return "set_insert"; }
 
+private:
+    SetType set;
+    std::vector<int> order;
+
+    void thread_func(int lower, int upper) {
+        for (int i = lower; i < upper; ++i) {
+            set.insert(order[i]);
+        }
+    }
+
+public:
     void run(size_t items) {
-        SetType set;
+        std::mt19937 gen(seed);
 
-        if (use_multi) 
-        {
-            std::default_random_engine rng(seed);
-            for (size_t i = 0; i < items; i++)
-                set.insert(rng());
+        order.resize(items);
+        std::iota(order.begin(), order.end(), 0);
+        std::ranges::shuffle(order, gen);
+
+        std::vector<std::thread> threads;
+
+        int per_thread = items / num_threads;
+
+        int cur = 0;
+        for (int i = 0; i < num_threads - 1; ++i) {
+            int newcur = cur + per_thread;
+            threads.emplace_back(&Test_Set_Insert::thread_func, this, cur, newcur);
+            cur = newcur;
         }
-        else 
-        {
-            std::mt19937 gen(seed);
+        threads.emplace_back(&Test_Set_Insert::thread_func, this, cur, items);
 
-            std::vector<int> v(items);
-            std::iota(v.begin(), v.end(), 0);
-            std::ranges::shuffle(v, gen);
 
-            for (auto num : v) {
-                set.insert(num);
-            }
-        }
+        for (auto& t : threads) t.join();
         
         die_unless(set.size() == items);
     }
@@ -147,23 +142,14 @@ public:
 //! Construct different set types for a generic test class
 template <template <typename SetType> class TestClass>
 struct TestFactory_Set {
-    //! Test the multiset red-black tree from STL
-    typedef TestClass<std::multiset<size_t> > StdSet;
-
-    //! Test the multiset red-black tree from STL
-    typedef TestClass<tlx::splay_multiset<size_t> > SplaySet;
-
-    //! Test the unordered_set from STL TR1
-    typedef TestClass<std::unordered_multiset<size_t> > UnorderedSet;
-
     //! Test the B+ tree with a specific leaf/inner slots
     template <int Slots>
     struct BtreeSet
-        : TestClass<tlx::btree_multiset<
+        : TestClass<tlx::btree_set<
                         size_t, std::less<size_t>,
                         struct btree_traits_speed<Slots, Slots> > > {
         BtreeSet(size_t n)
-            : TestClass<tlx::btree_multiset<
+            : TestClass<tlx::btree_set<
                             size_t, std::less<size_t>,
                             struct btree_traits_speed<Slots, Slots> > >(n) { }
     };
@@ -257,20 +243,14 @@ public:
 //! Construct different map types for a generic test class
 template <template <typename MapType> class TestClass>
 struct TestFactory_Map {
-    //! Test the multimap red-black tree from STL
-    typedef TestClass<std::multimap<size_t, size_t> > StdMap;
-
-    //! Test the unordered_map from STL
-    typedef TestClass<std::unordered_multimap<size_t, size_t> > UnorderedMap;
-
     //! Test the B+ tree with a specific leaf/inner slots
     template <int Slots>
     struct BtreeMap
-        : TestClass<tlx::btree_multimap<
+        : TestClass<tlx::btree_map<
                         size_t, size_t, std::less<size_t>,
                         struct btree_traits_speed<Slots, Slots> > > {
         BtreeMap(size_t n)
-            : TestClass<tlx::btree_multimap<
+            : TestClass<tlx::btree_map<
                             size_t, size_t, std::less<size_t>,
                             struct btree_traits_speed<Slots, Slots> > >(n) { }
     };
@@ -354,11 +334,6 @@ struct btree_range<Functional, Low, Low> {
 
 template <template <typename Type> class TestClass>
 void TestFactory_Set<TestClass>::call_testrunner(size_t items) {
-
-    testrunner_loop<StdSet>(items, "std::multiset");
-    testrunner_loop<UnorderedSet>(items, "std::unordered_multiset");
-    testrunner_loop<SplaySet>(items, "tlx::splay_multiset");
-
 #if 0
     btree_range<BtreeSet, min_nodeslots, max_nodeslots>()(
         items, "tlx::btree_multiset");
@@ -378,10 +353,6 @@ void TestFactory_Set<TestClass>::call_testrunner(size_t items) {
 
 template <template <typename Type> class TestClass>
 void TestFactory_Map<TestClass>::call_testrunner(size_t items) {
-
-    testrunner_loop<StdMap>(items, "std::multimap");
-    testrunner_loop<UnorderedMap>(items, "std::unordered_multimap");
-
 #if 0
     btree_range<BtreeMap, min_nodeslots, max_nodeslots>()(
         items, "tlx::btree_multimap");

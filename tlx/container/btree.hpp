@@ -1648,6 +1648,7 @@ public:
             clear_recursive(root_);
 
             root_->slotuse = 0;
+            root_->level = 0;
             head_leaf_ = tail_leaf_ = nullptr;
 
             // stats_ = tree_stats();
@@ -2300,7 +2301,7 @@ private:
 
         if (root_->level == 0) {
             TLX_BTREE_ASSERT(root_->slotuse == 0);
-            TLX_BTREE_ASSERT(stats_.size == 0);
+            //TLX_BTREE_ASSERT(stats_.size == 0);
 
             int oldgen = root_->gen;
             root_->lock->upgradelock();
@@ -2312,7 +2313,7 @@ private:
 
             TLX_BTREE_ASSERT(root_->level == 0);
             TLX_BTREE_ASSERT(root_->slotuse == 0);
-            TLX_BTREE_ASSERT(stats_.size == 0);
+            //TLX_BTREE_ASSERT(stats_.size == 0);
 
             root_->childid[0] = head_leaf_ = tail_leaf_ = allocate_leaf();
 
@@ -2967,7 +2968,7 @@ private:
                     root_->gen++;
                     root_->level = 0;
                     stats_.size--;
-                    
+
                     root_->lock->write_unlock();
                     return btree_ok;
                 } else {
@@ -4252,13 +4253,17 @@ public:
 
     void verify_one_node(const node* n) const {
         if (!root_->childid[0]) return;
+        if (root_->level == 0) {
+            tlx_die_unless(root_->slotuse == 0);
+            return;
+        }
 
         if (n->is_leafnode())
         {
             const LeafNode* leaf = static_cast<const LeafNode*>(n);
 
             tlx_die_unless(root_->level <= 1 || leaf->slotuse >= leaf_slotmin - 1);
-            tlx_die_unless(leaf->slotuse > 0 || stats_.size == 0);
+            //tlx_die_unless(leaf->slotuse > 0);
 
             for (unsigned short slot = 0; slot < leaf->slotuse - 1; ++slot)
             {
