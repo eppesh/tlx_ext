@@ -8,32 +8,31 @@
  * All rights reserved. Published under the Boost Software License, Version 1.0
  ******************************************************************************/
 
+#include <cxxabi.h>
+#include <execinfo.h>
+#include <unistd.h>
+
+#include <algorithm>
+#include <cassert>
+#include <chrono>
+#include <cmath>
+#include <csignal>
+#include <cstddef>
+#include <cstdint>
+#include <iostream>
+#include <map>
+#include <random>
+#include <set>
+#include <sstream>
+#include <stack>
+#include <string>
 #include <tlx/container/btree_map.hpp>
 #include <tlx/container/btree_multimap.hpp>
 #include <tlx/container/btree_multiset.hpp>
 #include <tlx/container/btree_set.hpp>
-
 #include <tlx/die.hpp>
-
-#include <cmath>
-#include <cstddef>
-#include <cstdint>
-#include <csignal>
-#include <unistd.h>
-#include <iostream>
-#include <set>
-#include <vector>
-#include <algorithm>
-#include <cassert>
-#include <iostream>
-#include <random>
-#include <string>
 #include <utility>
-#include <map>
-#include <execinfo.h>
-#include <cxxabi.h>
-#include <sstream>
-#include <stack>
+#include <vector>
 
 #if TLX_MORE_TESTS
 static const bool tlx_more_tests = true;
@@ -2332,6 +2331,61 @@ void test_multithread() {
     }
 }
 
+template <class KeyType>
+class TlxBTreeTest {
+   public:
+    TlxBTreeTest(const std::vector<KeyType>& data, int num_threads)
+        : data_(data), num_threads_(num_threads) {}
+
+    void RunWriteTest() {
+        tlx::btree_map<KeyType, KeyType> btree;
+        auto start = std::chrono::high_resolution_clock::now();
+
+        std::vector<std::thread> threads;
+        for (int i = 0; i < num_threads_; ++i) {
+            int chunk_size = data_.size() / num_threads_;
+            int start_index = i * chunk_size;
+            int end_index = (i == num_threads_ - 1) ? data_.size()
+                                                    : start_index + chunk_size;
+            threads.push_back(std::thread(WriteThreadTask, std::ref(btree),
+                                          std::ref(data_), start_index,
+                                          end_index));
+        }
+
+        for (auto& thread : threads) {
+            thread.join();
+        }
+
+        auto end = std::chrono::high_resolution_clock::now();
+        std::chrono::duration<double> duration = end - start;
+        double throughput =
+            data_.size() / duration.count() / 1024 / 1024;  // Mops/s
+
+        std::cout << "Write throughput," << num_threads_ << "," << throughput
+                  << ",Mops/s" << std::endl;
+        std::cout << "Data size: " << data_.size()
+                  << "; elpased time(s): " << duration.count() << std::endl;
+        // test
+        btree.verify();
+        for (auto it = btree.begin(); it != btree.end(); ++it) {
+            std::cout << it->first << ",";
+        }
+        std::cout << std::endl;
+    }
+
+    static void WriteThreadTask(tlx::btree_map<KeyType, KeyType>& btree,
+                                const std::vector<uint64_t>& data, int start,
+                                int end) {
+        for (int i = start; i < end; ++i) {
+            btree.insert(std::make_pair(data[i], data[i]));
+        }
+    }
+
+   private:
+    const std::vector<KeyType>& data_;
+    int num_threads_;
+};
+
 int main() {
     std::cout << "seed: " << seed << std::endl;
     std::cout << "pid: " << getpid() << std::endl;
@@ -2345,7 +2399,7 @@ int main() {
         test_relations();
         test_bulkload();
     }*/
-    if (multithread) {
+    /* if (multithread) {
         for (int i = 0; i < 100000; i++) {
             test_multithread(); // TODO remove this surrounding stuff
             my_multi_thread_set.clear();
@@ -2359,6 +2413,25 @@ int main() {
                 std::cout << i << std::endl;
             }
         }
+    } */
+    std::vector<uint64_t> data;
+    for (int i = 1; i <= 500; ++i) {
+        data.push_back(i);
+    }
+    unsigned tmp_seed =
+        std::chrono::system_clock::now().time_since_epoch().count();
+    std::shuffle(data.begin(), data.end(),
+                 std::default_random_engine(tmp_seed));
+
+    if (data.empty()) {
+        std::cerr << "data is empty" << std::endl;
+        return 0;
+    }
+    std::vector<int> thread_counts = {8};  // 1, 2, 4, 8
+    for (int num_threads : thread_counts) {
+        std::cout << "Number of threads: " << num_threads << std::endl;
+        TlxBTreeTest<uint64_t> test(data, num_threads);
+        test.RunWriteTest();
     }
     std::cout << "test successful!" << std::endl;
     return 0;
