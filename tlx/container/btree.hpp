@@ -95,13 +95,28 @@ enum MemOpType {
   FREE_LEAF,
 };
 
-extern void log_lock(void *node, int lock_type);
-extern void log_mem_op(MemOpType optype,void *node, int num_inner, int num_leaves);
-extern void log_retry(void );
-
 extern int cur_numthreads;
 
 extern const bool debug_print;
+
+#if defined(VTX_BTREE_CONCUR_TEST) || defined(NDEBUG)
+
+#define log_lock(node, lock_type)
+#define log_mem_op(optype, node, num_inner, num_leaves)
+#define log_retry()
+#define before_assert()
+#define VERIFY_NODE(verify, treep, nodep)
+
+#else
+
+extern void log_lock(void *node, int lock_type);
+extern void log_mem_op(MemOpType optype,void *node, int num_inner, int num_leaves);
+extern void log_retry(void);
+
+#define VERIFY_NODE(verify, treep, nodep)       \
+    if (verify) treep->verify_one_node(nodep);
+
+#endif
 
 namespace tlx {
 
@@ -112,8 +127,6 @@ namespace tlx {
 //! \{
 
 // *** Debugging Macros
-
-#define TLX_BTREE_DEBUG
 
 #ifdef TLX_BTREE_DEBUG
 
@@ -377,15 +390,15 @@ public:
         }
 
 #else
-        void addtoread(bool verify) {}
-        void delfromread(bool verify) {}
-        void addtowrite(bool verify) {}
-        void delfromwrite(bool verify) {}
+        void addtoread() {}
+        void delfromread(bool verify __attribute__((unused))) {}
+        void addtowrite() {}
+        void delfromwrite(bool verify __attribute__((unused))) {}
 
 #define DBGPRT()
 #endif
 
-        void readlock(bool verify = true) {
+        void readlock(bool verify __attribute__((unused)) = true) {
             log_lock(nodep, lock_type_read);
             lock_type lock(mutex);
             addtoread();
@@ -401,7 +414,7 @@ public:
                 readerswaiting--;
             }
             numreader++;
-            if (verify) treep->verify_one_node(nodep);
+            VERIFY_NODE(verify, treep, nodep);
             log_lock(nodep, lock_type_read_got);
             DBGPRT();
         }
@@ -425,7 +438,7 @@ public:
             DBGPRT();
         }
 
-        void writelock(bool verify = true) {
+        void writelock(bool verify __attribute__((unused)) = true) {
             log_lock(nodep, lock_type_write);
             lock_type lock(mutex);
             addtowrite();
@@ -439,7 +452,7 @@ public:
             }
             TLX_BTREE_ASSERT(!haswriter);
             haswriter = true;
-            if (verify) treep->verify_one_node(nodep);
+            VERIFY_NODE(verify, treep, nodep);
             log_lock(nodep, lock_type_write_got);
             DBGPRT();
         }
@@ -534,7 +547,7 @@ public: // XXX
             return (level == 0);
         }
 
-        node(BTree *tree) {
+        node(BTree *tree __attribute__((unused))) {
             lock = new LockHelper();
 #ifdef TLX_BTREE_DEBUG
             lock->nodep = this;
@@ -4286,7 +4299,7 @@ public:
     }
 
 #else
-    void verify_one_node(const node* n) const { }
+    void verify_one_node(const node* n __attribute__((unused))) const { }
 #endif
 
 private:
@@ -4301,8 +4314,10 @@ private:
 
             tlx_die_unless(root_->level <= 1 || leaf->slotuse >= leaf_slotmin - 1);
             tlx_die_unless(leaf->slotuse > 0);
+#ifdef TLX_BTREE_DEBUG
             tlx_die_unless(!leaf->lock->readlocked());
             tlx_die_unless(!leaf->lock->writelocked());
+#endif
 
             for (unsigned short slot = 0; slot < leaf->slotuse - 1; ++slot)
             {
@@ -4322,8 +4337,10 @@ private:
             vstats.inner_nodes++;
 
             tlx_die_unless(inner == root_ || inner->slotuse >= inner_slotmin - 1);
+#ifdef TLX_BTREE_DEBUG
             tlx_die_unless(!inner->lock->readlocked());
             tlx_die_unless(!inner->lock->writelocked());
+#endif
 
             for (unsigned short slot = 0; slot < inner->slotuse - 1; ++slot)
             {

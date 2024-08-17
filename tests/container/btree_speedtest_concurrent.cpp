@@ -5,13 +5,20 @@
 #include <random>
 #include <string>
 
+#define VTX_BTREE_CONCUR_TEST
+
 #include <tlx/container/btree_set.hpp>
 #include <tlx/container/btree_map.hpp>
+
+#include <set>
 
 #include <tlx/die.hpp>
 #include <tlx/timestamp.hpp>
 
 // *** Settings
+
+int cur_numthreads = -1; // not used
+const bool debug_print = false;
 
 //! starting number of items to insert
 const size_t min_items = 125;
@@ -20,7 +27,7 @@ const size_t min_items = 125;
 const size_t max_items = 1024000 * 64;
 
 //! number of threads operating at a time
-const int num_threads = 16; 
+const int num_threads = 1;
 
 //! random seed
 const int seed = 34234235; //std::random_device{}();
@@ -80,7 +87,7 @@ public:
 
 
         for (auto& t : threads) t.join();
-        
+
         die_unless(set.size() == items);
     }
 };
@@ -93,29 +100,82 @@ public:
     Test_Set_InsertFindDelete(size_t) { }
 
     static const char * op() { return "set_insert_find_delete"; }
+private:
+    SetType set;
+    std::vector<int> order;
 
+    void insert(int lower, int upper) {
+        for (int i = lower; i < upper; ++i) {
+            set.insert(order[i]);
+        }
+    }
+
+    void find(int lower, int upper) {
+        for (int i = lower; i < upper; ++i) {
+            set.find(order[i]); // TODO will this actually happen
+        }
+    }
+
+    void erase(int lower, int upper) {
+        for (int i = lower; i < upper; ++i) {
+            set.erase(order[i]);
+        }
+    }
+public:
     void run(size_t items) {
-        SetType set;
+        std::mt19937 gen(seed);
 
-        std::default_random_engine rng(seed);
-        for (size_t i = 0; i < items; i++)
-            set.insert(rng());
+        order.resize(items);
+        std::iota(order.begin(), order.end(), 0);
+        std::ranges::shuffle(order, gen);
+
+        std::vector<std::thread> threads;
+
+        int per_thread = items / num_threads;
+
+        int cur = 0;
+        for (int i = 0; i < num_threads - 1; ++i) {
+            int newcur = cur + per_thread;
+            threads.emplace_back(&Test_Set_InsertFindDelete::insert,
+                    this, cur, newcur);
+            cur = newcur;
+        }
+        threads.emplace_back(&Test_Set_InsertFindDelete::insert,
+                this, cur, items);
+
+        for (auto& t : threads) t.join();
 
         die_unless(set.size() == items);
 
-        rng.seed(seed);
-        for (size_t i = 0; i < items; i++)
-            set.find(rng());
+        threads.resize(0);
+        std::ranges::shuffle(order, gen);
+        for (int i = 0; i < num_threads - 1; ++i) {
+            int newcur = cur + per_thread;
+            threads.emplace_back(&Test_Set_InsertFindDelete::find,
+                    this, cur, newcur);
+            cur = newcur;
+        }
+        threads.emplace_back(&Test_Set_InsertFindDelete::find,
+                this, cur, items);
+        for (auto& t : threads) t.join();
 
-        rng.seed(seed);
-        for (size_t i = 0; i < items; i++)
-            set.erase(set.find(rng()));
+        threads.resize(0);
+        std::ranges::shuffle(order, gen);
+        for (int i = 0; i < num_threads - 1; ++i) {
+            int newcur = cur + per_thread;
+            threads.emplace_back(&Test_Set_InsertFindDelete::erase,
+                    this, cur, newcur);
+            cur = newcur;
+        }
+        threads.emplace_back(&Test_Set_InsertFindDelete::erase,
+                this, cur, items);
+        for (auto& t : threads) t.join();
 
         die_unless(set.empty());
     }
 };
 
-//! Test a generic set type with insert, find and delete sequences
+//! Test a generic set type with insert, find and delete sequences TODO change in actual
 template <typename SetType>
 class Test_Set_Find
 {
@@ -125,23 +185,53 @@ public:
     static const char * op() { return "set_find"; }
 
     Test_Set_Find(size_t items) {
-        std::default_random_engine rng(seed);
-        for (size_t i = 0; i < items; i++)
-            set.insert(rng());
+        std::mt19937 gen(seed);
 
+        order.resize(items);
+        std::iota(order.begin(), order.end(), 0);
+        std::ranges::shuffle(order, gen);
+
+        for (auto& num : order) {
+            set.insert(num);
+        }
         die_unless(set.size() == items);
     }
 
+private:
+    std::vector<int> order;
+
+    void thread_func(int lower, int upper) {
+        for (int i = lower; i < upper; ++i) {
+            set.find(order[i]); // TODO will this actually happen
+        }
+    }
+
+public:
     void run(size_t items) {
-        std::default_random_engine rng(seed);
-        for (size_t i = 0; i < items; i++)
-            set.find(rng());
+        std::vector<std::thread> threads;
+
+        int per_thread = items / num_threads;
+
+        int cur = 0;
+        for (int i = 0; i < num_threads - 1; ++i) {
+            int newcur = cur + per_thread;
+            threads.emplace_back(&Test_Set_Find::thread_func, this, cur, newcur);
+            cur = newcur;
+        }
+        threads.emplace_back(&Test_Set_Find::thread_func, this, cur, items);
+
+
+        for (auto& t : threads) t.join();
     }
 };
 
 //! Construct different set types for a generic test class
 template <template <typename SetType> class TestClass>
 struct TestFactory_Set {
+
+    //! Test the std::set
+    typedef TestClass<std::set<size_t> > StdSet;
+
     //! Test the B+ tree with a specific leaf/inner slots
     template <int Slots>
     struct BtreeSet
@@ -334,20 +424,22 @@ struct btree_range<Functional, Low, Low> {
 
 template <template <typename Type> class TestClass>
 void TestFactory_Set<TestClass>::call_testrunner(size_t items) {
+    testrunner_loop<StdSet>(items, "std::set");
+
 #if 0
     btree_range<BtreeSet, min_nodeslots, max_nodeslots>()(
-        items, "tlx::btree_multiset");
+        items, "tlx::btree_set");
 #else
     // just pick a few node sizes for quicker tests
-    testrunner_loop<BtreeSet<4> >(items, "tlx::btree_multiset<4> slots=4");
-    testrunner_loop<BtreeSet<8> >(items, "tlx::btree_multiset<8> slots=8");
-    testrunner_loop<BtreeSet<16> >(items, "tlx::btree_multiset<16> slots=16");
-    testrunner_loop<BtreeSet<32> >(items, "tlx::btree_multiset<32> slots=32");
-    testrunner_loop<BtreeSet<64> >(items, "tlx::btree_multiset<64> slots=64");
+    testrunner_loop<BtreeSet<4> >(items, "tlx::btree_set<4> slots=4");
+    testrunner_loop<BtreeSet<8> >(items, "tlx::btree_set<8> slots=8");
+    testrunner_loop<BtreeSet<16> >(items, "tlx::btree_set<16> slots=16");
+    testrunner_loop<BtreeSet<32> >(items, "tlx::btree_set<32> slots=32");
+    testrunner_loop<BtreeSet<64> >(items, "tlx::btree_set<64> slots=64");
     testrunner_loop<BtreeSet<128> >(
-        items, "tlx::btree_multiset<128> slots=128");
+        items, "tlx::btree_set<128> slots=128");
     testrunner_loop<BtreeSet<256> >(
-        items, "tlx::btree_multiset<256> slots=256");
+        items, "tlx::btree_set<256> slots=256");
 #endif
 }
 
@@ -405,7 +497,7 @@ int main() {
         }
     }
 
-    {   // Map - speed test only insertion
+    /*{   // Map - speed test only insertion
 
         repeat_until = min_items;
 
@@ -436,7 +528,7 @@ int main() {
             std::cout << "map: find " << items << "\n";
             TestFactory_Map<Test_Map_Find>().call_testrunner(items);
         }
-    }
+    }*/
 
     return 0;
 }
