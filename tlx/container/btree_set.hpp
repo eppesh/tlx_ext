@@ -335,6 +335,10 @@ public:
         return tree_.exists(key);
     }
 
+    bool contains(const key_type& key) {
+        return tree_.exists(key);
+    }
+
     //! Tries to locate a key in the B+ tree and returns an iterator to the key
     //! slot if found. If unsuccessful it returns end().
     iterator find(const key_type& key) {

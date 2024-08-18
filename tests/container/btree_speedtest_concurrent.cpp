@@ -175,6 +175,88 @@ public:
     }
 };
 
+//! Test a generic set type with insert, find and delete sequences
+template <typename SetType>
+class Test_Set_MixedOp
+{
+public:
+    Test_Set_MixedOp(size_t items) {
+        std::mt19937 gen(seed);
+
+        max_key = items * key_space_factor;
+
+        std::uniform_int_distribution<> key(0, max_key);
+
+        // prepare the set to start with items
+        while (my_set.size() < items) {
+            auto k = key(gen);
+            my_set.insert(k);
+        }
+    }
+
+    static const char * op() { return "set_mixed_ops"; }
+
+private:
+    SetType my_set;
+    int insert_prob{33};
+    int lookup_prob{34};
+    int delete_prob{33};
+    int key_space_factor{2};
+    int max_key;
+
+    struct alignas(128) thread_state { // align to cache line
+        int count;
+    };
+    std::vector<thread_state> thread_states;
+
+    void mixed_ops(int id, int items) {
+        // TODO std::mt19937 gen(seed + id);
+        std::mt19937 gen(std::random_device{}());
+        std::uniform_int_distribution<> key_dist(0, max_key);
+        std::uniform_int_distribution<> dist(0, 99);
+
+        for (int i = 0; i < items; ++i) {
+            int key = key_dist(gen);
+            int operation = dist(gen);
+
+            if (operation < insert_prob) {
+                bool succeeded = my_set.insert(key).second;
+                thread_states[id].count += succeeded;
+            }
+            else if (operation < insert_prob + lookup_prob) {
+                bool found = my_set.contains(key);
+                thread_states[id].count += found;
+            } else {
+                bool erased = my_set.erase(key);
+                thread_states[id].count += erased;
+            }
+        }
+    }
+
+public:
+    void run(size_t items) {
+        std::vector<std::thread> threads;
+        int per_thread = items / num_threads;
+
+        thread_states.resize(num_threads);
+
+        for (int i = 0; i < num_threads - 1; ++i) {
+            threads.emplace_back(&Test_Set_MixedOp::mixed_ops,
+                    this, i, per_thread);
+        }
+
+        for (auto& t : threads) t.join();
+
+        int n = 0;
+        for (auto st: thread_states) {
+            n += st.count;
+        }
+        if (n == -1234567) {
+            std::cout << "Print dummy line to avoid code being optimized out\n";
+        }
+    }
+};
+
 //! Test a generic set type with insert, find and delete sequences TODO change in actual
 template <typename SetType>
 class Test_Set_Find
@@ -394,10 +476,10 @@ void testrunner_loop(size_t items, const std::string& container_name) {
               << " op=" << TestClass::op()
               << " items=" << items
               << " repeat=" << repeat
-              << " time_total=" << (ts2 - ts1)
+              << " time_total=" << std::setprecision(1) << (ts2 - ts1)
               << " time="
               << std::fixed << std::setprecision(10) << ((ts2 - ts1) / repeat)
-              << " items_per_sec=" << items / (ts2 - ts1)
+              << " items_per_sec=" << int(items / (ts2 - ts1))
               << std::endl;
 }
 
@@ -464,10 +546,20 @@ void TestFactory_Map<TestClass>::call_testrunner(size_t items) {
 
 //! Speed test them!
 int main() {
+    {   // Set - speed test mixed insert, find, and erase
+
+        repeat_until = min_items;
+        for (size_t items = min_items; items <= max_items; items *= 2)
+        {
+            std::cout << "set: insert/find/erase " << items << "\n";
+            TestFactory_Set<Test_Set_MixedOp>().call_testrunner(items);
+        }
+        return 0;
+    }
+
     {   // Set - speed test only insertion
 
         repeat_until = min_items;
-
         for (size_t items = min_items; items <= max_items; items *= 2)
         {
             std::cout << "set: insert " << items << "\n";
