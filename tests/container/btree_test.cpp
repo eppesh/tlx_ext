@@ -8,6 +8,8 @@
  * All rights reserved. Published under the Boost Software License, Version 1.0
  ******************************************************************************/
 
+#define TLX_BTREE_TEST
+
 #include <tlx/container/btree_map.hpp>
 #include <tlx/container/btree_multimap.hpp>
 #include <tlx/container/btree_multiset.hpp>
@@ -45,8 +47,10 @@ static const bool test_multi = false;
 static const bool multithread = true;
 static const auto seed = std::random_device{}();
 
-const int STACK_START_TO_PRINT = 3;
-const int NUM_STACK_TO_PRINT = 4;
+enum {
+  STACK_START_TO_PRINT = 3,
+  NUM_STACK_TO_PRINT = 4
+};
 
 std::string format_time(
   std::chrono::time_point<std::chrono::system_clock> ts) {
@@ -2049,6 +2053,8 @@ enum {
 std::vector<LogInfo> debug_log_info(TOTAL_DEBUG_LOG_INFO);
 std::atomic<size_t> cur_debug_log_info = 0;
 
+#if defined(TLX_BTREE_TEST) && defined(TLX_BTREE_DEBUG) && !defined(NDEBUG)
+
 void get_stack_addr(void *out_addrs[NUM_STACK_TO_PRINT]) {
     const int TOTAL_STACK =
         STACK_START_TO_PRINT + NUM_STACK_TO_PRINT;
@@ -2220,6 +2226,30 @@ void print_threads_states(void)
         }
     }
 }
+
+void before_assert(void)
+{
+    static bool tree_printed = false;
+    if (!tree_printed) { // only print once
+        tree_printed = true;
+        print_all_lock_records();
+        std::lock_guard<std::mutex> l(printmtx);
+        std::cout << "======= print thread state before assert =======\n";
+        print_threads_states();
+        std::cout << std::endl;
+        return;
+    } else {
+        sleep(3600);
+    }
+}
+
+#else
+
+inline void print_all_lock_records() {}
+inline void  print_threads_states() {}
+
+#endif
+
 // Signal handler for SIGUSR1
 void signal_handler(int signum) {
     if (signum == SIGUSR1) {
@@ -2246,22 +2276,6 @@ void initialize_thread_info(int index) {
 void cleanup_thread_info() {
     local_debug_info.tinfo->cur_node = nullptr;
     local_debug_info.tinfo->op = 0;
-}
-
-void before_assert(void)
-{
-    static bool tree_printed = false;
-    if (!tree_printed) { // only print once
-        tree_printed = true;
-        print_all_lock_records();
-        std::lock_guard<std::mutex> l(printmtx);
-        std::cout << "======= print thread state before assert =======\n";
-        print_threads_states();
-        std::cout << std::endl;
-        return;
-    } else {
-        sleep(3600);
-    }
 }
 
 void print(const char* op, int val, int id) {

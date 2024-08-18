@@ -17,7 +17,11 @@
 #include <stdexcept>
 #include <string>
 
+#ifdef TLX_BTREE_TEST
 extern void before_assert(void);
+#else
+inline void before_assert(void) {}
+#endif
 
 namespace tlx {
 

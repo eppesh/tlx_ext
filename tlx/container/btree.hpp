@@ -99,15 +99,7 @@ extern int cur_numthreads;
 
 extern const bool debug_print;
 
-#if defined(VTX_BTREE_CONCUR_TEST) || defined(NDEBUG)
-
-#define log_lock(node, lock_type)
-#define log_mem_op(optype, node, num_inner, num_leaves)
-#define log_retry()
-#define before_assert()
-#define VERIFY_NODE(verify, treep, nodep)
-
-#else
+#if defined(TLX_BTREE_TEST) && defined(TLX_BTREE_DEBUG) && !defined(NDEBUG)
 
 extern void log_lock(void *node, int lock_type);
 extern void log_mem_op(MemOpType optype,void *node, int num_inner, int num_leaves);
@@ -115,6 +107,14 @@ extern void log_retry(void);
 
 #define VERIFY_NODE(verify, treep, nodep)       \
     if (verify) treep->verify_one_node(nodep);
+
+#else
+
+#define log_lock(node, lock_type)
+#define log_mem_op(optype, node, num_inner, num_leaves)
+#define log_retry()
+#define before_assert()
+#define VERIFY_NODE(verify, treep, nodep)
 
 #endif
 
