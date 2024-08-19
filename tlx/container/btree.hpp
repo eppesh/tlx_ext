@@ -201,18 +201,15 @@ struct btree_default_traits {
  * This class is specialized into btree_set, btree_multiset, btree_map and
  * btree_multimap using default template parameters and facade functions.
  */
-template <typename Key, typename Value,
-          typename KeyOfValue,
+template <typename Key, typename Value, typename KeyOfValue,
           typename Compare = std::less<Key>,
           typename Traits = btree_default_traits<Key, Value>,
-          bool Duplicates = false,
-          typename Allocator = std::allocator<Value>,
+          bool Duplicates = false, typename Allocator = std::allocator<Value>,
           typename Mutex = std::mutex,
           typename ConditionVariable = std::condition_variable,
           typename UniqueLock = std::unique_lock<Mutex>>
-class BTree
-{
-public:
+class BTree {
+   public:
     //! \name Template Parameter Types
     //! \{
 
@@ -256,21 +253,22 @@ public:
     // tree.
     TLX_BTREE_FRIENDS;
 
-public:
+   public:
     //! \name Constructed Types
     //! \{
 
     //! Typedef of our own type
-    typedef BTree<key_type, value_type, key_of_value, key_compare,
-                  traits, allow_duplicates, allocator_type, mutex_type,
-                  cv_type, lock_type> Self;
+    typedef BTree<key_type, value_type, key_of_value, key_compare, traits,
+                  allow_duplicates, allocator_type, mutex_type, cv_type,
+                  lock_type>
+        Self;
 
     //! Size type used to count keys
     typedef size_t size_type;
 
     //! \}
 
-public:
+   public:
     //! \name Static Constant Options and Values of the B+ Tree
     //! \{
 
@@ -299,6 +297,12 @@ public:
     //! algorithms change the tree. Requires the header file to be compiled
     //! with TLX_BTREE_DEBUG and the key type must be std::ostream printable.
     static const bool debug = traits::debug;
+
+    //! Batched SMO threshold. Used to define an unstable node
+    //! TODO: they should be adjusted based on inner_slots and leaf_slots
+    //! Maybe std::floor(10% * inner_slots) ?
+    static const unsigned short inner_batched_threshold = 4;
+    static const unsigned short leaf_batched_threshold = 4;
 
     //! \}
 private:
@@ -369,12 +373,12 @@ public:
             return curwrite.contains(std::this_thread::get_id());
         }
 
-#define DBGPRT() \
-        if (false && debug_print && nodep->level == 0) { \
-            std::lock_guard<std::mutex> printlock(printmtx); \
-            std::cout << __func__ << " " << seq++ << ": node=" << nodep << " "; \
-            print_node(std::cout, nodep); \
-        }
+#define DBGPRT()                                                            \
+    if (false && debug_print && nodep->level == 0) {                         \
+        std::lock_guard<std::mutex> printlock(printmtx);                    \
+        std::cout << __func__ << " " << seq++ << ": node=" << nodep << " "; \
+        print_node(std::cout, nodep);                                       \
+    }
 
 #else
         void addtoread(bool verify) {}
@@ -554,10 +558,10 @@ public: // XXX
         typedef typename std::allocator_traits<Allocator>::template rebind_alloc<InnerNode> alloc_type;
 
         //! Keys of children or data pointers
-        key_type slotkey[inner_slotmax]; // NOLINT
+        key_type slotkey[2 * inner_slotmax];  // NOLINT
 
         //! Pointers to children
-        node* childid[inner_slotmax + 1]; // NOLINT
+        node* childid[2 * inner_slotmax + 1];  // NOLINT
 
         InnerNode(BTree *tree) : node(tree) {}
 
@@ -572,9 +576,8 @@ public: // XXX
         }
 
         //! True if the node's slots are full.
-        bool is_full() const {
-            return (node::slotuse == inner_slotmax);
-        }
+        //! If batched splits happens, slotuse can be larger than slotmax
+        bool is_full() const { return (node::slotuse >= inner_slotmax); }
 
         //! True if few used entries, less than half full.
         bool is_few() const {
@@ -585,6 +588,11 @@ public: // XXX
         bool is_underflow() const {
             return (node::slotuse < inner_slotmin);
         }
+
+        //! True if the node's slots are split-unstable
+        /* bool is_full_unstabl() const {
+            return (node::slotuse >= (inner_slotmax - inner_batched_threshold));
+        } */
     };
 
     //! Extended structure of a leaf node in memory. Contains pairs of keys and
@@ -600,7 +608,7 @@ public: // XXX
         LeafNode* next_leaf;
 
         //! Array of (key, data) pairs
-        value_type slotdata[leaf_slotmax]; // NOLINT
+        value_type slotdata[leaf_slotmax + leaf_batched_threshold];  // NOLINT
 
         LeafNode(BTree *tree) : node(tree) {}
 
@@ -617,7 +625,7 @@ public: // XXX
 
         //! True if the node's slots are full.
         bool is_full() const {
-            return (node::slotuse == leaf_slotmax);
+            return (node::slotuse >= (leaf_slotmax + leaf_batched_threshold));
         }
 
         //! True if few used entries, less than half full.
@@ -636,11 +644,22 @@ public: // XXX
             TLX_BTREE_ASSERT(slot < node::slotuse);
             slotdata[slot] = value;
         }
+
+        //! True if node's slots are split-unstable
+        bool is_full_unstable() const {
+            return (node::slotuse >= (leaf_slotmax - leaf_batched_threshold));
+        }
     };
 
+    //! The structure of one split result
+    struct SplitResult {
+        key_type newkey;
+        LeafNode* newleaf;
+        unsigned short slot;
+    };
     //! \}
 
-public:
+   public:
     //! \name Iterators and Reverse Iterators
     //! \{
 
@@ -2399,19 +2418,19 @@ private:
             if (childisleaf) inner->childid[slot]->lock->writelock();
             else inner->childid[slot]->lock->readlock();
 
-            check_split_res res = check_split_child(inner, inner->childid[slot], slot);
+            check_split_res res =
+                check_split_child(inner, inner->childid[slot], slot, key);
             if (res == retry) return insert_res(); // unlocked in check_split_child
 
             // unlocking the irrelevant child
-            if (res == did_split) {
+            // childisleaf unlocked in check_split_child
+            if (res == did_split && !childisleaf) {
                 // if the key ended up moving
-                if (key_less(inner->key(slot), key)){
-                    if (childisleaf) inner->childid[slot]->lock->write_unlock();
-                    else inner->childid[slot]->lock->read_unlock();
+                if (key_less(inner->key(slot), key)) {
+                    inner->childid[slot]->lock->read_unlock();
                     slot++;
                 } else {
-                    if (childisleaf) inner->childid[slot + 1]->lock->write_unlock();
-                    else inner->childid[slot + 1]->lock->read_unlock();
+                    inner->childid[slot + 1]->lock->read_unlock();
                 }
             }
 
@@ -2442,7 +2461,8 @@ private:
             // move items and put data item into correct data slot
             TLX_BTREE_ASSERT(slot >= 0 && slot <= leaf->slotuse);
             // leaf will not overflow
-            TLX_BTREE_ASSERT(leaf->slotuse + 1 <= leaf_slotmax);
+            TLX_BTREE_ASSERT(leaf->slotuse + 1 <=
+                             (leaf_slotmax + leaf_batched_threshold));
 
             std::copy_backward(
                 leaf->slotdata + slot, leaf->slotdata + leaf->slotuse,
@@ -2458,7 +2478,9 @@ private:
 
     //! Check if the node's child need to be split,
     //! in which case it splits it. Returns whether or now the child was split
-    check_split_res check_split_child(InnerNode* parent, node* c, unsigned short slot) {
+    check_split_res check_split_child(InnerNode* parent, node* c,
+                                      unsigned short& slot,
+                                      const key_type& key) {
         TLX_BTREE_ASSERT(parent->childid[slot] == c);
         TLX_BTREE_ASSERT(parent->lock->readlocked());
 
@@ -2486,25 +2508,72 @@ private:
                     return retry;
                 }
 
-                key_type newkey = key_type();
+                // Split unstable leaves
+                std::vector<SplitResult> split_results;
+                // Function to split a leaf node and return the result
+                auto split_node = [&](LeafNode* cur_child,
+                                      unsigned short current_slot,
+                                      bool is_trigger) -> SplitResult {
+                    key_type newkey = key_type();
+                    LeafNode* newleaf = nullptr;
+                    split_leaf_node(cur_child, &newkey, &newleaf, is_trigger);
+                    cur_child->gen++;
+                    return {newkey, newleaf, current_slot};
+                };
+                // Iterate over the silbings and split if necessary
+                for (unsigned short i = 0; i < parent->slotuse + 1; ++i) {
+                    TLX_BTREE_ASSERT(parent->childid[i]->is_leafnode());
+                    LeafNode* leaf = static_cast<LeafNode*>(parent->childid[i]);
+                    if (leaf->is_full_unstable()) {
+                        bool is_trigger = (i == slot);
+                        split_results.push_back(
+                            split_node(leaf, i, is_trigger));
+                    }
+                }
+                /* key_type newkey = key_type();
                 LeafNode* newleaf = nullptr;
 
                 split_leaf_node(child, &newkey, &newleaf);
 
-                child->gen++;
+                child->gen++; */
+
+                // Update the parent node in one go
                 parent->gen++;
+                size_t total_splits = split_results.size();
+                /* std::cout << "[check_split_child] total_splits=" << total_splits
+                          << ",parent slotuse=" << parent->slotuse
+                          << ", slot=" << slot << ", parent=" << parent
+                          << ", child=" << child << std::endl; */
+                {
+                    int i = parent->slotuse - 1;
+                    int j = split_results.size() - 1;
+                    int k = parent->slotuse + split_results.size() - 1;
+                    int m = i + 1;  // for old childid
+                    int n = k + 1;  // for new childid
+                    while (j >= 0) {
+                        if (parent->slotuse == 0) {
+                            parent->slotkey[k--] = split_results[j].newkey;
+                            parent->childid[n--] = split_results[j--].newleaf;
+                        } else if (i >= 0 &&
+                                   key_greater(parent->slotkey[i],
+                                               split_results[j].newkey)) {
+                            parent->slotkey[k--] = parent->slotkey[i--];
+                            parent->childid[n--] = parent->childid[m--];
+                        } else {
+                            parent->slotkey[k--] = split_results[j].newkey;
+                            parent->childid[n--] = split_results[j--].newleaf;
+                        }
+                    }
+                    parent->slotuse += split_results.size();
+                }
+                // Recalculate slot and unlock irrelevent leaf nodes
+                slot = find_lower(parent, key);
+                parent->childid[slot]->lock->writelock();
 
-                std::copy_backward(
-                    parent->slotkey + slot, parent->slotkey + parent->slotuse,
-                    parent->slotkey + parent->slotuse + 1);
-                std::copy_backward(
-                    parent->childid + slot, parent->childid + parent->slotuse + 1,
-                    parent->childid + parent->slotuse + 2);
-
-                parent->slotkey[slot] = newkey;
-                parent->childid[slot + 1] = newleaf;
-                parent->slotuse++;
-
+                /* std::cout << "[check_split_child] parent slotuse="
+                          << parent->slotuse << ", slot=" << slot
+                          << ", parent=" << parent << ", child=" << child
+                          << std::endl; */
                 parent->lock->downgrade_lock();
                 return did_split;
             }
@@ -2561,11 +2630,12 @@ private:
     //! Split up a leaf node into two equally-filled sibling leaves. Returns the
     //! new nodes and its insertion key in the two parameters. The new
     //! node is write locked.
-    void split_leaf_node(LeafNode* leaf,
-                         key_type* out_newkey, LeafNode** out_newleaf) {
-
-        TLX_BTREE_ASSERT(leaf->is_full());
-        TLX_BTREE_ASSERT(leaf->lock->writelocked());
+    void split_leaf_node(LeafNode* leaf, key_type* out_newkey,
+                         LeafNode** out_newleaf, bool is_trigger = true) {
+        TLX_BTREE_ASSERT(leaf->is_full_unstable());
+        if (is_trigger) {
+            TLX_BTREE_ASSERT(leaf->lock->writelocked());
+        }
 
         unsigned short mid = (leaf->slotuse >> 1);
 
@@ -2594,6 +2664,11 @@ private:
 
         *out_newkey = leaf->key(leaf->slotuse - 1);
         *out_newleaf = newleaf;
+
+        if (is_trigger) {
+            leaf->lock->write_unlock(false);
+        }
+        newleaf->lock->write_unlock(false);
     }
 
     //! Split up an inner node into two equally-filled sibling nodes. Returns
@@ -4262,7 +4337,9 @@ public:
         {
             const LeafNode* leaf = static_cast<const LeafNode*>(n);
 
-            tlx_die_unless(root_->level <= 1 || leaf->slotuse >= leaf_slotmin - 1);
+            tlx_die_unless(root_->level <= 1 ||
+                           leaf->slotuse >=
+                               (leaf_slotmin - leaf_batched_threshold - 1));
             //tlx_die_unless(leaf->slotuse > 0);
 
             for (unsigned short slot = 0; slot < leaf->slotuse - 1; ++slot)
@@ -4299,7 +4376,9 @@ private:
         {
             const LeafNode* leaf = static_cast<const LeafNode*>(n);
 
-            tlx_die_unless(root_->level <= 1 || leaf->slotuse >= leaf_slotmin - 1);
+            tlx_die_unless(root_->level <= 1 ||
+                           leaf->slotuse >=
+                               (leaf_slotmin - leaf_batched_threshold - 1));
             tlx_die_unless(leaf->slotuse > 0);
             tlx_die_unless(!leaf->lock->readlocked());
             tlx_die_unless(!leaf->lock->writelocked());

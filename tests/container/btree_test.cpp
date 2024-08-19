@@ -19,6 +19,7 @@
 #include <csignal>
 #include <cstddef>
 #include <cstdint>
+#include <fstream>
 #include <iostream>
 #include <map>
 #include <random>
@@ -2367,10 +2368,10 @@ class TlxBTreeTest {
                   << "; elpased time(s): " << duration.count() << std::endl;
         // test
         btree.verify();
-        for (auto it = btree.begin(); it != btree.end(); ++it) {
+        /* for (auto it = btree.begin(); it != btree.end(); ++it) {
             std::cout << it->first << ",";
         }
-        std::cout << std::endl;
+        std::cout << std::endl; */
     }
 
     static void WriteThreadTask(tlx::btree_map<KeyType, KeyType>& btree,
@@ -2385,6 +2386,24 @@ class TlxBTreeTest {
     const std::vector<KeyType>& data_;
     int num_threads_;
 };
+
+template <class KeyType>
+std::vector<KeyType> ReadDataFromFile(const std::string& filename) {
+    std::ifstream file(filename, std::ios::in);
+    std::vector<KeyType> data;
+    if (!file.is_open()) {
+        std::cout << "Could not open file" << std::endl;
+        return data;
+    }
+    std::string line;
+    while (std::getline(file, line)) {
+        data.push_back(std::stoi(line));
+    }
+
+    file.close();
+    std::cout << "Read data from file successfully" << std::endl;
+    return data;
+}
 
 int main() {
     std::cout << "seed: " << seed << std::endl;
@@ -2414,20 +2433,24 @@ int main() {
             }
         }
     } */
-    std::vector<uint64_t> data;
-    for (int i = 1; i <= 500; ++i) {
+    std::string filename = "/tmp/trace/fiu/FIU_iodedup_mail10.csv";
+    std::cout << "Start multi-threaded test ..." << std::endl;
+    std::cout << "Trace: " << filename << std::endl;
+    std::vector<uint64_t> data = ReadDataFromFile<uint64_t>(filename);
+    /* std::vector<uint64_t> data;
+    for (int i = 1; i <= 520; ++i) {
         data.push_back(i);
-    }
-    unsigned tmp_seed =
+    } */
+    /* unsigned tmp_seed =
         std::chrono::system_clock::now().time_since_epoch().count();
     std::shuffle(data.begin(), data.end(),
-                 std::default_random_engine(tmp_seed));
+                 std::default_random_engine(tmp_seed)); */
 
     if (data.empty()) {
         std::cerr << "data is empty" << std::endl;
         return 0;
     }
-    std::vector<int> thread_counts = {8};  // 1, 2, 4, 8
+    std::vector<int> thread_counts = {4};  // 1, 2, 4, 8
     for (int num_threads : thread_counts) {
         std::cout << "Number of threads: " << num_threads << std::endl;
         TlxBTreeTest<uint64_t> test(data, num_threads);

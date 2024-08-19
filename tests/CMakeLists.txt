@@ -12,7 +12,7 @@
 macro(tlx_build_target TARGETNAME)
 
   add_executable(tlx_${TARGETNAME} ${ARGN})
-  target_link_libraries(tlx_${TARGETNAME} tlx)
+  target_link_libraries(tlx_${TARGETNAME} tlx gflags)
 
 endmacro(tlx_build_target)
 
