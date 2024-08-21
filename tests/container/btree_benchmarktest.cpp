@@ -885,6 +885,8 @@ class Benchmark {
                 method = &Benchmark::DoGenMixWorkload;
             } else if (name == "tlx_read_write") {
                 method = &Benchmark::DoTlxBtreeReadWrite;
+            } else if (name == "verify") {
+                method = &Benchmark::DoVerify;
             }
 
             if (method != nullptr)
@@ -917,6 +919,8 @@ class Benchmark {
                 for (size_t i = 0; i < num_keys; i++) {
                     tlx_btree_map_.insert(values[i]);
                 }
+                std::cout << "[BulkLoad] " << num_keys
+                          << " has been inserted into TLX btree" << std::endl;
             }
             delete[] values;
         }
@@ -1087,6 +1091,14 @@ class Benchmark {
                  not_find);
 
         thread->stats.AddMessage(buf);
+    }
+
+    void DoVerify(ThreadState* thread) {
+        std::cout << "[Verify " << thread->tid
+                  << "] Start verifying tlx tree..." << std::endl;
+        tlx_btree_map_.verify();
+        std::cout << "[Verify " << thread->tid
+                  << "] Finish verifying successfully." << std::endl;
     }
 
    private:
