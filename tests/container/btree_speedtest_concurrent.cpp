@@ -17,9 +17,6 @@
 
 // *** Settings
 
-int cur_numthreads = -1; // not used
-const bool debug_print = false;
-
 //! starting number of items to insert
 const size_t min_items = 125;
 
@@ -27,7 +24,12 @@ const size_t min_items = 125;
 const size_t max_items = 1024000 * 64;
 
 //! number of threads operating at a time
-const int num_threads = 1;
+int cur_numthreads = 3;
+
+enum {
+    INSERT_PROP = 34,
+    LOOKUP_PROP = 33
+};
 
 //! random seed
 const int seed = 34234235; //std::random_device{}();
@@ -50,6 +52,10 @@ struct btree_traits_speed : tlx::btree_default_traits<size_t, size_t> {
 template <typename SetType>
 class Test_Set_Insert
 {
+public:
+    double duration = 0.0;
+    size_t actual_items = 0;
+
 public:
     Test_Set_Insert(size_t) { }
 
@@ -75,10 +81,10 @@ public:
 
         std::vector<std::thread> threads;
 
-        int per_thread = items / num_threads;
+        int per_thread = items / cur_numthreads;
 
         int cur = 0;
-        for (int i = 0; i < num_threads - 1; ++i) {
+        for (int i = 0; i < cur_numthreads - 1; ++i) {
             int newcur = cur + per_thread;
             threads.emplace_back(&Test_Set_Insert::thread_func, this, cur, newcur);
             cur = newcur;
@@ -96,6 +102,10 @@ public:
 template <typename SetType>
 class Test_Set_InsertFindDelete
 {
+public:
+    double duration = 0.0;
+    size_t actual_items = 0;
+
 public:
     Test_Set_InsertFindDelete(size_t) { }
 
@@ -131,10 +141,10 @@ public:
 
         std::vector<std::thread> threads;
 
-        int per_thread = items / num_threads;
+        int per_thread = items / cur_numthreads;
 
         int cur = 0;
-        for (int i = 0; i < num_threads - 1; ++i) {
+        for (int i = 0; i < cur_numthreads - 1; ++i) {
             int newcur = cur + per_thread;
             threads.emplace_back(&Test_Set_InsertFindDelete::insert,
                     this, cur, newcur);
@@ -149,7 +159,7 @@ public:
 
         threads.resize(0);
         std::ranges::shuffle(order, gen);
-        for (int i = 0; i < num_threads - 1; ++i) {
+        for (int i = 0; i < cur_numthreads - 1; ++i) {
             int newcur = cur + per_thread;
             threads.emplace_back(&Test_Set_InsertFindDelete::find,
                     this, cur, newcur);
@@ -161,7 +171,7 @@ public:
 
         threads.resize(0);
         std::ranges::shuffle(order, gen);
-        for (int i = 0; i < num_threads - 1; ++i) {
+        for (int i = 0; i < cur_numthreads - 1; ++i) {
             int newcur = cur + per_thread;
             threads.emplace_back(&Test_Set_InsertFindDelete::erase,
                     this, cur, newcur);
@@ -180,6 +190,10 @@ template <typename SetType>
 class Test_Set_MixedOp
 {
 public:
+    double duration = 0.0;
+    size_t actual_items = 0;
+
+public:
     Test_Set_MixedOp(size_t items) {
         std::mt19937 gen(seed);
 
@@ -192,43 +206,77 @@ public:
             auto k = key(gen);
             my_set.insert(k);
         }
+
+        reset();
     }
 
     static const char * op() { return "set_mixed_ops"; }
 
 private:
     SetType my_set;
-    int insert_prob{33};
-    int lookup_prob{34};
-    int delete_prob{33};
+    int insert_prob{INSERT_PROP};
+    int lookup_prob{LOOKUP_PROP};
     int key_space_factor{2};
     int max_key;
+    std::atomic<int> num_running = 0;
+    std::atomic<int> num_stopped = 0;
+    double ts_start = 0.0, ts_stop = 0.0;
 
     struct alignas(128) thread_state { // align to cache line
         int count;
+        int rc;
     };
     std::vector<thread_state> thread_states;
+    bool stop = false;
 
-    void mixed_ops(int id, int items) {
+    void reset() {
+        ts_start = ts_stop = 0.0;
+        num_running = 0;
+        num_stopped = 0;
+        actual_items = 0;
+        stop = false;
+    }
+
+    void mixed_ops(int id, int items, int total_threads) {
         // TODO std::mt19937 gen(seed + id);
         std::mt19937 gen(std::random_device{}());
         std::uniform_int_distribution<> key_dist(0, max_key);
         std::uniform_int_distribution<> dist(0, 99);
 
-        for (int i = 0; i < items; ++i) {
+        auto old_val = num_running.fetch_add(1, std::memory_order_relaxed);
+        if (old_val + 1 == total_threads) { // this is the last thread starts running
+            ts_start = tlx::timestamp();
+        }
+
+        for (int i = 0; !stop && i < items; ++i) {
             int key = key_dist(gen);
             int operation = dist(gen);
 
             if (operation < insert_prob) {
                 bool succeeded = my_set.insert(key).second;
-                thread_states[id].count += succeeded;
+                ++thread_states[id].count;
+                thread_states[id].rc += succeeded;
             }
             else if (operation < insert_prob + lookup_prob) {
                 bool found = my_set.contains(key);
-                thread_states[id].count += found;
+                ++thread_states[id].count;
+                thread_states[id].rc += found;
             } else {
                 bool erased = my_set.erase(key);
-                thread_states[id].count += erased;
+                ++thread_states[id].count;
+                thread_states[id].rc += erased;
+            }
+        }
+
+        old_val = num_stopped.fetch_add(1, std::memory_order_relaxed);
+        if (old_val == 0) { // this is the first thread stops
+            ts_stop = tlx::timestamp();
+            if (ts_stop > ts_start && ts_start != 0.0) {
+                duration += ts_stop - ts_start;
+                stop = true; // stop all threads
+                for (auto st: thread_states) {
+                    actual_items += st.count;
+                }
             }
         }
     }
@@ -236,22 +284,24 @@ private:
 public:
     void run(size_t items) {
         std::vector<std::thread> threads;
-        int per_thread = items / num_threads;
+        int per_thread = items / cur_numthreads;
 
-        thread_states.resize(num_threads);
+        thread_states.resize(cur_numthreads);
 
-        for (int i = 0; i < num_threads - 1; ++i) {
+        reset();
+
+        for (int i = 0; i < cur_numthreads; ++i) {
             threads.emplace_back(&Test_Set_MixedOp::mixed_ops,
-                    this, i, per_thread);
+                                 this, i, per_thread, cur_numthreads);
         }
 
         for (auto& t : threads) t.join();
 
-        int n = 0;
+        size_t n = 0;
         for (auto st: thread_states) {
-            n += st.count;
+            n += st.rc;
         }
-        if (n == -1234567) {
+        if (n == 1234567890ul) {
             std::cout << "Print dummy line to avoid code being optimized out\n";
         }
     }
@@ -261,6 +311,10 @@ public:
 template <typename SetType>
 class Test_Set_Find
 {
+public:
+    double duration = 0.0;
+    size_t actual_items = 0;
+
 public:
     SetType set;
 
@@ -292,10 +346,10 @@ public:
     void run(size_t items) {
         std::vector<std::thread> threads;
 
-        int per_thread = items / num_threads;
+        int per_thread = items / cur_numthreads;
 
         int cur = 0;
-        for (int i = 0; i < num_threads - 1; ++i) {
+        for (int i = 0; i < cur_numthreads - 1; ++i) {
             int newcur = cur + per_thread;
             threads.emplace_back(&Test_Set_Find::thread_func, this, cur, newcur);
             cur = newcur;
@@ -440,12 +494,15 @@ template <typename TestClass>
 void testrunner_loop(size_t items, const std::string& container_name) {
 
     size_t repeat = 0;
-    double ts1, ts2;
+    double ts1, ts2, duration;
+    size_t actual_items = 0;
 
     do
     {
         // count repetition of timed tests
         repeat = 0;
+        duration = 0.0;
+        actual_items = items;
 
         {
             // initialize test structures
@@ -461,25 +518,42 @@ void testrunner_loop(size_t items, const std::string& container_name) {
             }
 
             ts2 = tlx::timestamp();
+
+            if (test.duration != 0.0) {
+                duration = test.duration;
+                actual_items = test.actual_items;
+            }
         }
 
         std::cout << "Insert " << items << " repeat " << (repeat_until / items)
-                  << " time " << (ts2 - ts1) << "\n";
+                  << " time " << (ts2 - ts1);
+        if (duration != 0.0) {
+            std::cout << " real time " << std::setprecision(9) << duration
+                      << " real total items " << actual_items;
+        }
+        std::cout << "\n";
 
         // discard and repeat if test took less than one second.
-        if ((ts2 - ts1) < 1.0) repeat_until *= 2;
+        if ((ts2 - ts1) < 1.0 || duration < 0.5) repeat_until *= 2;
     }
-    while ((ts2 - ts1) < 1.0);
+    while ((ts2 - ts1) < 1.0 || duration < 0.5);
+
+    if (duration != 0) {
+        ts1 = 0.0;
+        ts2 = duration;
+    }
 
     std::cout << "RESULT"
               << " container=" << container_name
               << " op=" << TestClass::op()
-              << " items=" << items
+              << " avg_items_per_repeat=" << actual_items / repeat
               << " repeat=" << repeat
               << " time_total=" << std::setprecision(1) << (ts2 - ts1)
-              << " time="
-              << std::fixed << std::setprecision(10) << ((ts2 - ts1) / repeat)
-              << " items_per_sec=" << int(items / (ts2 - ts1))
+              << " time(ns)="
+              << std::fixed << std::setprecision(3)
+              << ((ts2 - ts1) * 1e9 / actual_items)
+              << " items_per_sec(m)=" << std::setprecision(3)
+              << (actual_items / (ts2 - ts1)) / 1e6
               << std::endl;
 }
 
@@ -506,7 +580,9 @@ struct btree_range<Functional, Low, Low> {
 
 template <template <typename Type> class TestClass>
 void TestFactory_Set<TestClass>::call_testrunner(size_t items) {
-    testrunner_loop<StdSet>(items, "std::set");
+    if (cur_numthreads == 1) {
+        testrunner_loop<StdSet>(items, "std::set");
+    }
 
 #if 0
     btree_range<BtreeSet, min_nodeslots, max_nodeslots>()(
@@ -546,12 +622,17 @@ void TestFactory_Map<TestClass>::call_testrunner(size_t items) {
 
 //! Speed test them!
 int main() {
+    std::cout << "Num Threads: " << cur_numthreads << "\n";
+    std::cout << "InsertOp: " << INSERT_PROP << "% "
+              << "LookupOp: " << LOOKUP_PROP << "% "
+              << "DeleteOp: " << 100 - INSERT_PROP - LOOKUP_PROP << "%\n";
+
     {   // Set - speed test mixed insert, find, and erase
 
         repeat_until = min_items;
         for (size_t items = min_items; items <= max_items; items *= 2)
         {
-            std::cout << "set: insert/find/erase " << items << "\n";
+            std::cout << "set: mixed op (insert/find/erase) " << items << "\n";
             TestFactory_Set<Test_Set_MixedOp>().call_testrunner(items);
         }
         return 0;
