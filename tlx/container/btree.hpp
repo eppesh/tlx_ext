@@ -11,6 +11,8 @@
 #ifndef TLX_CONTAINER_BTREE_HEADER
 #define TLX_CONTAINER_BTREE_HEADER
 
+#define TLX_BTREE_DEBUG
+
 #include <tlx/die/core.hpp>
 
 // *** Required Headers from the STL
@@ -127,7 +129,6 @@ namespace tlx {
 //! \{
 
 // *** Debugging Macros
-
 #ifdef TLX_BTREE_DEBUG
 
 //! Print out debug information to std::cout if TLX_BTREE_DEBUG is defined.
@@ -2952,7 +2953,6 @@ private:
                         ") on btree size " << size());
 
         if (self_verify) verify();
-
         root_->lock->readlock();
 
         if (root_->level == 0) {
@@ -2976,6 +2976,12 @@ private:
                         return restart;
                     }
                     child->lock->writelock();
+
+                    if (child->slotuse != 1) {
+                        child->lock->write_unlock();
+                        root_->lock->write_unlock();
+                        return restart;
+                    }
 
                     free_node(child);
                     root_->gen++;
@@ -3316,6 +3322,7 @@ private:
         TLX_BTREE_ASSERT(parentslot < parent->slotuse);
         TLX_BTREE_ASSERT(parent->childid[parentslot] == leftchild);
         TLX_BTREE_ASSERT(parent->childid[parentslot + 1] == rightchild);
+        TLX_BTREE_ASSERT(parent->level > 0);
 
         TLX_BTREE_ASSERT(parent->lock->writelocked());
         TLX_BTREE_ASSERT(leftchild->lock->writelocked());

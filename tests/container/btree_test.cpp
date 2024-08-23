@@ -2369,9 +2369,6 @@ int main() {
             for (auto& e : truth_source) {
                 e.in_set = false;
             }
-            if (i % 100 == 0) {
-                std::cout << i << std::endl;
-            }
         }
     }
     std::cout << "test successful!" << std::endl;
