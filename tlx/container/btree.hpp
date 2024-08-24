@@ -331,7 +331,6 @@ public:
         cv_type upgradecv;
         unsigned int numreader = 0;
         bool haswriter = false;
-        bool hasdowngrader = false;
         int writerswaiting = 0;
         int readerswaiting = 0;
         int upgradewaiting = 0;
@@ -403,12 +402,11 @@ public:
             log_lock(nodep, lock_type_read);
             lock_type lock(mutex);
             addtoread();
-            if (haswriter || hasdowngrader
-                    || writerswaiting > 0
+            if (haswriter || writerswaiting > 0
                     || upgradewaiting > 0) {
                 readerswaiting++;
                 readcv.wait(lock, [this](){
-                        return !this->haswriter && !this->hasdowngrader
+                        return !this->haswriter
                         && this->writerswaiting == 0
                         && this->upgradewaiting == 0;
                 });
@@ -465,8 +463,6 @@ public:
             TLX_BTREE_ASSERT(numreader >= 1);
             numreader--;
             if (numreader == 0) {
-                if (hasdowngrader) hasdowngrader = false;
-
                 if (upgradewaiting > 0) upgradecv.notify_one();
                 else if (writerswaiting > 0) writecv.notify_one();
                 else readcv.notify_all();
@@ -497,9 +493,10 @@ public:
             TLX_BTREE_ASSERT(haswriter);
             addtoread();
             delfromwrite(false);
-            hasdowngrader = true;
             haswriter = false;
             numreader++;
+            readcv.notify_all();
+            // ^ only works when theres no writers waiting
             DBGPRT();
         }
 
