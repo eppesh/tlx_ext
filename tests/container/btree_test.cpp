@@ -36,6 +36,7 @@
 #include <cxxabi.h>
 #include <sstream>
 #include <stack>
+#include <tlx/timestamp.hpp>
 
 #if TLX_MORE_TESTS
 static const bool tlx_more_tests = true;
@@ -53,12 +54,13 @@ enum {
 };
 
 std::string format_time(
-  std::chrono::time_point<std::chrono::system_clock> ts) {
+  std::chrono::time_point<std::chrono::high_resolution_clock> ts) {
     // Get the current time from system_clock
     auto now = ts;
 
     // Convert to time_t to get calendar time
-    std::time_t time_t_now = std::chrono::system_clock::to_time_t(now);
+    std::time_t time_t_now = std::chrono::duration_cast<std::chrono::seconds>(
+        now.time_since_epoch()).count();
 
     // Convert time_t to tm for formatting
     std::tm tm_now = *std::localtime(&time_t_now);
@@ -68,19 +70,19 @@ std::string format_time(
 
     // Extract seconds and nanoseconds from the duration
     auto seconds = std::chrono::duration_cast<std::chrono::seconds>(duration_since_epoch);
-    auto microseconds = std::chrono::duration_cast<std::chrono::microseconds>(duration_since_epoch) - seconds;
+    auto nanoseconds = std::chrono::duration_cast<std::chrono::nanoseconds>(duration_since_epoch) - seconds;
 
     // Format the output string
     std::stringstream ss;
     ss << std::put_time(&tm_now, "%Y-%m-%d %H:%M:%S");
-    ss << '.' << std::setw(6) << std::setfill('0') << microseconds.count();
+    ss << '.' << std::setw(6) << std::setfill('0') << nanoseconds.count();
 
     return ss.str();
 }
 
 std::string format_current_time() {
     // Get the current time from system_clock
-    auto now = std::chrono::system_clock::now();
+    auto now = std::chrono::high_resolution_clock::now();
     return format_time(now);
 }
 
@@ -2022,7 +2024,7 @@ enum LogType {
 
 struct LogInfo {
     LogType logtype;
-    std::chrono::time_point<std::chrono::system_clock> timestamp;
+    std::chrono::time_point<std::chrono::high_resolution_clock> timestamp;
     void *addrs[NUM_STACK_TO_PRINT];
     int threadidx;
     void *node;
@@ -2090,7 +2092,7 @@ void log_mem_op(MemOpType optype, void *node,
     log_info.logtype = LOG_MEM_OP;
     log_info.node = node;
     log_info.mem_op_type = optype;
-    log_info.timestamp = std::chrono::system_clock::now();
+    log_info.timestamp = std::chrono::high_resolution_clock::now();
     log_info.threadidx = local_debug_info.tinfo ?
         local_debug_info.tinfo->threadidx : 0;
     log_info.num_inner = num_inner;
@@ -2109,7 +2111,7 @@ void log_lock(void* node, int lock_type) {
 
         LogInfo& log_info = debug_log_info[idx % TOTAL_DEBUG_LOG_INFO];
         log_info.logtype = LOG_LOCK;
-        log_info.timestamp = std::chrono::system_clock::now();
+        log_info.timestamp = std::chrono::high_resolution_clock::now();
         log_info.threadidx = local_debug_info.tinfo->threadidx;
         log_info.node = node;
 
@@ -2360,7 +2362,12 @@ int main() {
         test_bulkload();
     }*/
     if (multithread) {
-        for (int i = 0; i < 100000; i++) {
+        int total_passes = 100000;
+        double ts_start = tlx::timestamp();
+        bool one_line = false;
+        int prt_interval = one_line ? 40 : 500;
+
+        for (int i = 0; i < total_passes; i++) {
             test_multithread(); // TODO remove this surrounding stuff
             my_multi_thread_set.clear();
             debug_log_info.resize(0);
@@ -2369,7 +2376,30 @@ int main() {
             for (auto& e : truth_source) {
                 e.in_set = false;
             }
+
+            if (i != 0 && i % prt_interval == 0) {
+                double ts_now = tlx::timestamp();
+                double prop = 100.0 * i / total_passes;
+                int sec = int(ts_now - ts_start + 0.5);
+                int sec_left = sec / (prop / 100.0) - sec;
+                if (one_line) {
+                   std::cout << "\r";
+                }
+                std::cout << std::setfill('0') << std::setw(2) << sec / 60 << ':'
+                          << std::setfill('0') << std::setw(2) << sec % 60
+                          <<" " << i << "/" << total_passes
+                          << "  " << int(prop + 0.5)
+                          << "%  time left: "
+                          << std::setfill('0') << std::setw(2) << sec_left / 60 << ':'
+                          << std::setfill('0') << std::setw(2) << sec_left % 60;
+                if (one_line) {
+                   std::cout << std::flush;
+                } else {
+                   std::cout << std::endl;
+                }
+            }
         }
+        std::cout << std::endl;
     }
     std::cout << "test successful!" << std::endl;
     return 0;
