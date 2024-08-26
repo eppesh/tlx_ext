@@ -3349,13 +3349,14 @@ private:
             parent->slotuse--;
 
             if (parentslot == 0) {
-                TLX_BTREE_ASSERT(key_greaterequal(parent->slotkey[parentslot],
-                    leftchild->key(leftchild->slotuse - 1)));
+                if (parent->slotuse > 0)
+                    TLX_BTREE_ASSERT(key_greaterequal(parent->slotkey[parentslot],
+                            leftchild->key(leftchild->slotuse - 1)));
             } else {
-            // this looks weird but its because leftchild is
-            // now the right child of (parentslot - 1) (because parentslot was deleted)
-            // because of the merge
-            TLX_BTREE_ASSERT(key_lessequal(parent->slotkey[parentslot - 1],
+                // this looks weird but its because leftchild is
+                // now the right child of (parentslot - 1) (because parentslot was deleted)
+                // because of the merge
+                TLX_BTREE_ASSERT(key_lessequal(parent->slotkey[parentslot - 1],
                     leftchild->key(0)));
             }
         }
