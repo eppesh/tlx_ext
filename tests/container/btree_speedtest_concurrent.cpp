@@ -562,11 +562,12 @@ void testrunner_loop(size_t items, const std::string& container_name) {
               << million_ops_per_sec
               << std::endl;
 
-    std::cout << "TestName\tItems\tRepeat\tMops/s\n"
+    std::cout << "TestName\tItems\tRepeat\tMops/s\tThreads\n"
               << container_name << "\t"
               << actual_items / repeat << "\t"
               << repeat << "\t"
-              << million_ops_per_sec << "\n";
+              << million_ops_per_sec << "\t"
+              << cur_numthreads << std::endl;
 }
 
 // Template magic to emulate a for_each slots. These templates will roll-out
