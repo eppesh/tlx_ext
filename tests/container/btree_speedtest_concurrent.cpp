@@ -208,6 +208,7 @@ public:
             my_set.insert(k);
         }
 
+        std::cout << "Initialized " << items << "\n";
         reset();
     }
 
@@ -512,7 +513,6 @@ void testrunner_loop(size_t items, const std::string& container_name) {
             // initialize test structures
             TestClass test(items);
 
-            std::cout << "Initialized " << items << "\n";
             ts1 = tlx::timestamp();
 
             for (size_t r = 0; r < repeat_until; r += items)
