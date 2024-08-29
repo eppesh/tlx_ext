@@ -2008,7 +2008,7 @@ int seqnum = 0;
 set_type my_multi_thread_set;
 
 const int NUM_THREADS = 16;
-int cur_numthreads = 1;
+size_t cur_numthreads = 1;
 const int thread_start_idx = 2;
 const bool debug_print = false;
 
@@ -2196,7 +2196,7 @@ void print_all_lock_records() {
 void print_threads_states(void)
 {
     my_multi_thread_set.print(std::cout);
-    for (int i = 0; i < cur_numthreads; ++i) {
+    for (size_t i = 0; i < cur_numthreads; ++i) {
         std::cout << "Thread " << i + thread_start_idx << " id: " << global_thread_info[i].id
             << " - Node: " << global_thread_info[i].cur_node
             << ", Operation: " << lock_type_to_string(global_thread_info[i].op)

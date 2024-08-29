@@ -19,18 +19,18 @@
 // *** Settings
 
 //! starting number of items to insert
-const size_t min_items = 1024000; // 125;
+size_t min_items = 125;
 
 //! maximum number of items to insert
-const size_t max_items = 1024000 * 64;
+size_t max_items = 1024000 * 64;
+
+size_t start_repeat = 1;
 
 //! number of threads operating at a time
-int cur_numthreads = 1;
+size_t cur_numthreads = 1;
 
-enum {
-    LOOKUP_PROP = 70,
-    INSERT_PROP = 15,
-};
+size_t LOOKUP_PROP = 70;
+size_t INSERT_PROP = 15;
 
 //! random seed
 const int seed = 34234235; //std::random_device{}();
@@ -82,10 +82,10 @@ public:
 
         std::vector<std::thread> threads;
 
-        int per_thread = items / cur_numthreads;
+        size_t per_thread = items / cur_numthreads;
 
         int cur = 0;
-        for (int i = 0; i < cur_numthreads - 1; ++i) {
+        for (size_t i = 0; i < cur_numthreads - 1; ++i) {
             int newcur = cur + per_thread;
             threads.emplace_back(&Test_Set_Insert::thread_func, this, cur, newcur);
             cur = newcur;
@@ -142,10 +142,10 @@ public:
 
         std::vector<std::thread> threads;
 
-        int per_thread = items / cur_numthreads;
+        size_t per_thread = items / cur_numthreads;
 
         int cur = 0;
-        for (int i = 0; i < cur_numthreads - 1; ++i) {
+        for (size_t i = 0; i < cur_numthreads - 1; ++i) {
             int newcur = cur + per_thread;
             threads.emplace_back(&Test_Set_InsertFindDelete::insert,
                     this, cur, newcur);
@@ -160,7 +160,7 @@ public:
 
         threads.resize(0);
         std::ranges::shuffle(order, gen);
-        for (int i = 0; i < cur_numthreads - 1; ++i) {
+        for (size_t i = 0; i < cur_numthreads - 1; ++i) {
             int newcur = cur + per_thread;
             threads.emplace_back(&Test_Set_InsertFindDelete::find,
                     this, cur, newcur);
@@ -172,7 +172,7 @@ public:
 
         threads.resize(0);
         std::ranges::shuffle(order, gen);
-        for (int i = 0; i < cur_numthreads - 1; ++i) {
+        for (size_t i = 0; i < cur_numthreads - 1; ++i) {
             int newcur = cur + per_thread;
             threads.emplace_back(&Test_Set_InsertFindDelete::erase,
                     this, cur, newcur);
@@ -216,8 +216,8 @@ public:
 
 private:
     SetType my_set;
-    int insert_prob{INSERT_PROP};
-    int lookup_prob{LOOKUP_PROP};
+    int insert_prob = INSERT_PROP;
+    int lookup_prob = LOOKUP_PROP;
     int key_space_factor{2};
     int max_key;
     std::atomic<int> num_running = 0;
@@ -287,13 +287,13 @@ private:
 public:
     void run(size_t items) {
         std::vector<std::thread> threads;
-        int per_thread = items / cur_numthreads;
+        size_t per_thread = items / cur_numthreads;
 
         thread_states.resize(cur_numthreads);
 
         reset();
 
-        for (int i = 0; i < cur_numthreads; ++i) {
+        for (size_t i = 0; i < cur_numthreads; ++i) {
             threads.emplace_back(&Test_Set_MixedOp::mixed_ops,
                                  this, i, per_thread, cur_numthreads);
         }
@@ -350,10 +350,10 @@ public:
     void run(size_t items) {
         std::vector<std::thread> threads;
 
-        int per_thread = items / cur_numthreads;
+        size_t per_thread = items / cur_numthreads;
 
         int cur = 0;
-        for (int i = 0; i < cur_numthreads - 1; ++i) {
+        for (size_t i = 0; i < cur_numthreads - 1; ++i) {
             int newcur = cur + per_thread;
             threads.emplace_back(&Test_Set_Find::thread_func, this, cur, newcur);
             cur = newcur;
@@ -491,7 +491,7 @@ struct TestFactory_Map {
 
 // -----------------------------------------------------------------------------
 
-size_t repeat_until = 1;
+size_t repeat_until;
 
 //! Repeat (short) tests until enough time elapsed and divide by the repeat.
 template <typename TestClass>
@@ -531,7 +531,7 @@ void testrunner_loop(size_t items, const std::string& container_name) {
         }
 
         std::cout << "Insert " << items << " repeat " << (repeat_until / items)
-                  << " time " << (ts2 - ts1);
+                  << " repeat_until " << repeat_until << " time " << (ts2 - ts1);
         if (duration != 0.0) {
             std::cout << " real time " << std::setprecision(9) << duration
                       << " real total items " << actual_items;
@@ -629,23 +629,31 @@ void TestFactory_Map<TestClass>::call_testrunner(size_t items) {
 #endif
 }
 
+void get_env_int(const char *name, size_t *var) {
+    if (const char* env_str = std::getenv(name)) {
+        size_t new_val = atol(env_str);
+        *var = new_val;
+        std::cout << "Set " << name << " to " << new_val << std::endl;
+    }
+}
+
 //! Speed test them!
 int main() {
     std::cout << "pid: " << getpid() << std::endl;
-    if (const char* num_thread_str = std::getenv("BTREE_NUM_THREADS")) {
-        int num_threads = atoi(num_thread_str);
-        if (num_threads > 0) {
-            cur_numthreads = num_threads;
-        }
-    }
-    std::cout << "Num Threads: " << cur_numthreads << "\n";
+    get_env_int("BT_THREADS", &cur_numthreads);
+    get_env_int("BT_MIN", &min_items);
+    get_env_int("BT_MAX", &max_items);
+    get_env_int("BT_REPEAT", &start_repeat);
+    get_env_int("BT_INSERT_P", &INSERT_PROP);
+    get_env_int("BT_LOOKUP_P", &LOOKUP_PROP);
+
     std::cout << "InsertOp: " << INSERT_PROP << "% "
               << "LookupOp: " << LOOKUP_PROP << "% "
               << "DeleteOp: " << 100 - INSERT_PROP - LOOKUP_PROP << "%\n";
 
     {   // Set - speed test mixed insert, find, and erase
 
-        repeat_until = min_items;
+        repeat_until = min_items * start_repeat;
         for (size_t items = min_items; items <= max_items; items *= 2)
         {
             std::cout << "set: mixed op (insert/find/erase) " << items << "\n";

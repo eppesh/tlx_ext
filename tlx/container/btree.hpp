@@ -95,7 +95,7 @@ enum MemOpType {
   FREE_LEAF,
 };
 
-extern int cur_numthreads;
+extern size_t cur_numthreads;
 
 extern const bool debug_print;
 
