@@ -548,6 +548,7 @@ void testrunner_loop(size_t items, const std::string& container_name) {
         ts2 = duration;
     }
 
+    float million_ops_per_sec = (actual_items / (ts2 - ts1)) / 1e6;
     std::cout << "RESULT"
               << " container=" << container_name
               << " op=" << TestClass::op()
@@ -558,8 +559,14 @@ void testrunner_loop(size_t items, const std::string& container_name) {
               << std::fixed << std::setprecision(3)
               << ((ts2 - ts1) * 1e9 / actual_items)
               << " items_per_sec(m)=" << std::setprecision(3)
-              << (actual_items / (ts2 - ts1)) / 1e6
+              << million_ops_per_sec
               << std::endl;
+
+    std::cout << "TestName\tItems\tRepeat\tMops/s\n"
+              << container_name << "\t"
+              << actual_items / repeat << "\t"
+              << repeat << "\t"
+              << million_ops_per_sec << "\n";
 }
 
 // Template magic to emulate a for_each slots. These templates will roll-out
@@ -591,21 +598,21 @@ void TestFactory_Set<TestClass>::call_testrunner(size_t items) {
 
 #if 0
     btree_range<BtreeSet, min_nodeslots, max_nodeslots>()(
-        items, "tlx::btree_set");
+        items, "btree_set");
 #else
     // just pick a few node sizes for quicker tests
     /*
-    testrunner_loop<BtreeSet<4> >(items, "tlx::btree_set<4> slots=4");
-    testrunner_loop<BtreeSet<8> >(items, "tlx::btree_set<8> slots=8");
-    testrunner_loop<BtreeSet<16> >(items, "tlx::btree_set<16> slots=16");
-    testrunner_loop<BtreeSet<32> >(items, "tlx::btree_set<32> slots=32");
+    testrunner_loop<BtreeSet<4> >(items, "btree_set<4>");
+    testrunner_loop<BtreeSet<8> >(items, "btree_set<8>");
+    testrunner_loop<BtreeSet<16> >(items, "btree_set<16>");
+    testrunner_loop<BtreeSet<32> >(items, "btree_set<32>");
     */
-    testrunner_loop<BtreeSet<64> >(items, "tlx::btree_set<64> slots=64");
+    testrunner_loop<BtreeSet<64> >(items, "btree_set<64>");
     /*
     testrunner_loop<BtreeSet<128> >(
-        items, "tlx::btree_set<128> slots=128");
+        items, "btree_set<128>");
     testrunner_loop<BtreeSet<256> >(
-        items, "tlx::btree_set<256> slots=256");
+        items, "btree_set<256>");
     */
 #endif
 }
