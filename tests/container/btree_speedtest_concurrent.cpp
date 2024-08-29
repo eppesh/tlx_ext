@@ -18,17 +18,17 @@
 // *** Settings
 
 //! starting number of items to insert
-const size_t min_items = 125;
+const size_t min_items = 1024000; // 125;
 
 //! maximum number of items to insert
 const size_t max_items = 1024000 * 64;
 
 //! number of threads operating at a time
-int cur_numthreads = 3;
+int cur_numthreads = 1;
 
 enum {
-    INSERT_PROP = 34,
-    LOOKUP_PROP = 33
+    LOOKUP_PROP = 70,
+    INSERT_PROP = 15,
 };
 
 //! random seed
@@ -246,6 +246,10 @@ private:
         auto old_val = num_running.fetch_add(1, std::memory_order_relaxed);
         if (old_val + 1 == total_threads) { // this is the last thread starts running
             ts_start = tlx::timestamp();
+        } else { // wait for other thread to get to this point
+           while (num_running < total_threads) {
+              std::this_thread::yield();
+           }
         }
 
         for (int i = 0; !stop && i < items; ++i) {
@@ -274,9 +278,6 @@ private:
             if (ts_stop > ts_start && ts_start != 0.0) {
                 duration += ts_stop - ts_start;
                 stop = true; // stop all threads
-                for (auto st: thread_states) {
-                    actual_items += st.count;
-                }
             }
         }
     }
@@ -300,7 +301,8 @@ public:
         size_t n = 0;
         for (auto st: thread_states) {
             n += st.rc;
-        }
+            actual_items += st.count;
+       }
         if (n == 1234567890ul) {
             std::cout << "Print dummy line to avoid code being optimized out\n";
         }
@@ -487,7 +489,7 @@ struct TestFactory_Map {
 
 // -----------------------------------------------------------------------------
 
-size_t repeat_until;
+size_t repeat_until = 1;
 
 //! Repeat (short) tests until enough time elapsed and divide by the repeat.
 template <typename TestClass>
@@ -496,6 +498,7 @@ void testrunner_loop(size_t items, const std::string& container_name) {
     size_t repeat = 0;
     double ts1, ts2, duration;
     size_t actual_items = 0;
+    double min_run_time = 1.0;
 
     do
     {
@@ -510,7 +513,7 @@ void testrunner_loop(size_t items, const std::string& container_name) {
 
             ts1 = tlx::timestamp();
 
-            for (size_t r = 0; r <= repeat_until; r += items)
+            for (size_t r = 0; r < repeat_until; r += items)
             {
                 // run timed test procedure
                 test.run(items);
@@ -534,9 +537,9 @@ void testrunner_loop(size_t items, const std::string& container_name) {
         std::cout << "\n";
 
         // discard and repeat if test took less than one second.
-        if ((ts2 - ts1) < 1.0 || duration < 0.5) repeat_until *= 2;
+        if ((ts2 - ts1) < min_run_time || duration < min_run_time) repeat_until *= 2;
     }
-    while ((ts2 - ts1) < 1.0 || duration < 0.5);
+    while ((ts2 - ts1) < min_run_time || duration < min_run_time);
 
     if (duration != 0) {
         ts1 = 0.0;
@@ -589,15 +592,19 @@ void TestFactory_Set<TestClass>::call_testrunner(size_t items) {
         items, "tlx::btree_set");
 #else
     // just pick a few node sizes for quicker tests
+    /*
     testrunner_loop<BtreeSet<4> >(items, "tlx::btree_set<4> slots=4");
     testrunner_loop<BtreeSet<8> >(items, "tlx::btree_set<8> slots=8");
     testrunner_loop<BtreeSet<16> >(items, "tlx::btree_set<16> slots=16");
     testrunner_loop<BtreeSet<32> >(items, "tlx::btree_set<32> slots=32");
+    */
     testrunner_loop<BtreeSet<64> >(items, "tlx::btree_set<64> slots=64");
+    /*
     testrunner_loop<BtreeSet<128> >(
         items, "tlx::btree_set<128> slots=128");
     testrunner_loop<BtreeSet<256> >(
         items, "tlx::btree_set<256> slots=256");
+    */
 #endif
 }
 
@@ -622,6 +629,13 @@ void TestFactory_Map<TestClass>::call_testrunner(size_t items) {
 
 //! Speed test them!
 int main() {
+    if (const char* num_thread_str = std::getenv("BTREE_NUM_THREADS")) {
+        int num_threads = atoi(num_thread_str);
+        if (num_threads > 0) {
+            std::cout << "BTREE_NUM_THREADS: " << num_threads << "\n";
+            cur_numthreads = num_threads;
+        }
+    }
     std::cout << "Num Threads: " << cur_numthreads << "\n";
     std::cout << "InsertOp: " << INSERT_PROP << "% "
               << "LookupOp: " << LOOKUP_PROP << "% "

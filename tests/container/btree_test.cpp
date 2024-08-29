@@ -9,6 +9,7 @@
  ******************************************************************************/
 
 #define TLX_BTREE_TEST
+#define TLX_BTREE_DEBUG
 
 #include <tlx/container/btree_map.hpp>
 #include <tlx/container/btree_multimap.hpp>

@@ -11,8 +11,6 @@
 #ifndef TLX_CONTAINER_BTREE_HEADER
 #define TLX_CONTAINER_BTREE_HEADER
 
-#define TLX_BTREE_DEBUG
-
 #include <tlx/die/core.hpp>
 
 // *** Required Headers from the STL
