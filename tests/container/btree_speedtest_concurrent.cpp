@@ -4,6 +4,7 @@
 #include <iostream>
 #include <random>
 #include <string>
+#include <unistd.h>
 
 #define VTX_BTREE_CONCUR_TEST
 
@@ -629,10 +630,10 @@ void TestFactory_Map<TestClass>::call_testrunner(size_t items) {
 
 //! Speed test them!
 int main() {
+    std::cout << "pid: " << getpid() << std::endl;
     if (const char* num_thread_str = std::getenv("BTREE_NUM_THREADS")) {
         int num_threads = atoi(num_thread_str);
         if (num_threads > 0) {
-            std::cout << "BTREE_NUM_THREADS: " << num_threads << "\n";
             cur_numthreads = num_threads;
         }
     }
