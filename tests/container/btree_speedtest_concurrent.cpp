@@ -29,6 +29,8 @@ size_t start_repeat = 1;
 //! number of threads operating at a time
 size_t cur_numthreads = 1;
 
+bool skip_std_set = false;
+
 size_t LOOKUP_PROP = 70;
 size_t INSERT_PROP = 15;
 
@@ -73,7 +75,13 @@ private:
     }
 
 public:
-    void run(size_t items) {
+    void run(size_t items, size_t repeat_until) {
+        for (size_t r = 0; r < repeat_until; r += items) {
+            run_one(items);
+        }
+    }
+
+    void run_one(size_t items) {
         std::mt19937 gen(seed);
 
         order.resize(items);
@@ -133,7 +141,13 @@ private:
         }
     }
 public:
-    void run(size_t items) {
+    void run(size_t items, size_t repeat_until) {
+        for (size_t r = 0; r < repeat_until; r += items) {
+            run_one(items);
+        }
+    }
+
+    void run_one(size_t items) {
         std::mt19937 gen(seed);
 
         order.resize(items);
@@ -285,9 +299,9 @@ private:
     }
 
 public:
-    void run(size_t items) {
+    void run(size_t items __attribute__((unused)), size_t repeat_until) {
         std::vector<std::thread> threads;
-        size_t per_thread = items / cur_numthreads;
+        size_t per_thread = repeat_until / cur_numthreads;
 
         thread_states.resize(cur_numthreads);
 
@@ -347,7 +361,13 @@ private:
     }
 
 public:
-    void run(size_t items) {
+    void run(size_t items, size_t repeat_until) {
+        for (size_t r = 0; r < repeat_until; r += items) {
+            run_one(items);
+        }
+    }
+
+    void run_one(size_t items) {
         std::vector<std::thread> threads;
 
         size_t per_thread = items / cur_numthreads;
@@ -399,7 +419,13 @@ public:
 
     static const char * op() { return "map_insert"; }
 
-    void run(size_t items) {
+    void run(size_t items, size_t repeat_until) {
+        for (size_t r = 0; r < repeat_until; r += items) {
+            run_one(items);
+        }
+    }
+
+    void run_one(size_t items) {
         MapType map;
 
         std::default_random_engine rng(seed);
@@ -421,7 +447,13 @@ public:
 
     static const char * op() { return "map_insert_find_delete"; }
 
-    void run(size_t items) {
+    void run(size_t items, size_t repeat_until) {
+        for (size_t r = 0; r < repeat_until; r += items) {
+            run_one(items);
+        }
+    }
+
+    void run_one(size_t items) {
         MapType map;
 
         std::default_random_engine rng(seed);
@@ -463,7 +495,13 @@ public:
         die_unless(map.size() == items);
     }
 
-    void run(size_t items) {
+    void run(size_t items, size_t repeat_until) {
+        for (size_t r = 0; r < repeat_until; r += items) {
+            run_one(items);
+        }
+    }
+
+    void run_one(size_t items) {
         std::default_random_engine rng(seed);
         for (size_t i = 0; i < items; i++)
             map.find(rng());
@@ -497,15 +535,13 @@ size_t repeat_until;
 template <typename TestClass>
 void testrunner_loop(size_t items, const std::string& container_name) {
 
-    size_t repeat = 0;
     double ts1, ts2, duration;
     size_t actual_items = 0;
     double min_run_time = 1.0;
 
     do
     {
-        // count repetition of timed tests
-        repeat = 0;
+        // count timed tests
         duration = 0.0;
         actual_items = items;
 
@@ -515,12 +551,8 @@ void testrunner_loop(size_t items, const std::string& container_name) {
 
             ts1 = tlx::timestamp();
 
-            for (size_t r = 0; r < repeat_until; r += items)
-            {
-                // run timed test procedure
-                test.run(items);
-                ++repeat;
-            }
+            // run timed test procedure
+            test.run(items, repeat_until);
 
             ts2 = tlx::timestamp();
 
@@ -530,8 +562,8 @@ void testrunner_loop(size_t items, const std::string& container_name) {
             }
         }
 
-        std::cout << "Insert " << items << " repeat " << (repeat_until / items)
-                  << " repeat_until " << repeat_until << " time " << (ts2 - ts1);
+        std::cout << "Insert=" << items << " repeat=" << repeat_until / items
+                  << " repeat_until=" << repeat_until << " time=" << (ts2 - ts1);
         if (duration != 0.0) {
             std::cout << " real time " << std::setprecision(9) << duration
                       << " real total items " << actual_items;
@@ -552,8 +584,6 @@ void testrunner_loop(size_t items, const std::string& container_name) {
     std::cout << "RESULT"
               << " container=" << container_name
               << " op=" << TestClass::op()
-              << " avg_items_per_repeat=" << actual_items / repeat
-              << " repeat=" << repeat
               << " time_total=" << std::setprecision(1) << (ts2 - ts1)
               << " time(ns)="
               << std::fixed << std::setprecision(3)
@@ -562,10 +592,9 @@ void testrunner_loop(size_t items, const std::string& container_name) {
               << million_ops_per_sec
               << std::endl;
 
-    std::cout << "TestName\tItems\tRepeat\tMops/s\tThreads\n"
+    std::cout << "TestName\tItems\tMops/s\tThreads\n"
               << container_name << "\t"
-              << actual_items / repeat << "\t"
-              << repeat << "\t"
+              << actual_items << "\t"
               << million_ops_per_sec << "\t"
               << cur_numthreads << std::endl;
 }
@@ -593,7 +622,7 @@ struct btree_range<Functional, Low, Low> {
 
 template <template <typename Type> class TestClass>
 void TestFactory_Set<TestClass>::call_testrunner(size_t items) {
-    if (cur_numthreads == 1) {
+    if (cur_numthreads == 1 && !skip_std_set) {
         testrunner_loop<StdSet>(items, "std::set");
     }
 
@@ -637,23 +666,64 @@ void TestFactory_Map<TestClass>::call_testrunner(size_t items) {
 #endif
 }
 
-void get_env_int(const char *name, size_t *var) {
-    if (const char* env_str = std::getenv(name)) {
-        size_t new_val = atol(env_str);
-        *var = new_val;
-        std::cout << "Set " << name << " to " << new_val << std::endl;
-    }
+void print_usage(const char *program_name) {
+    std::cout << "Usage: " << program_name << " [options]\n"
+              << "Options:\n"
+              << "  -t <num>  Set BT_THREADS (default: 1)\n"
+              << "  -m <num>  Set BT_MIN (default: 0)\n"
+              << "  -M <num>  Set BT_MAX (default: 0)\n"
+              << "  -r <num>  Set BT_REPEAT (default: 0)\n"
+              << "  -i <num>  Set BT_INSERT_P (default: 0)\n"
+              << "  -l <num>  Set BT_LOOKUP_P (default: 0)\n"
+              << "  -h        Print this help message and exit\n";
 }
 
 //! Speed test them!
-int main() {
+int main(int argc, char *argv[]) {
+    int opt;
+    while ((opt = getopt(argc, argv, "t:m:M:r:i:l:s:h")) != -1) {
+        switch (opt) {
+        case 't':
+            cur_numthreads = atol(optarg);
+            break;
+        case 'm':
+            min_items = atol(optarg);
+            if (min_items <= 0) {
+                std::cerr << "-m (min_items) must be positive! Got " << min_items << ".\n";
+                return EXIT_FAILURE;
+            }
+            break;
+        case 'M':
+            max_items = atol(optarg);
+            if (max_items <= 0) {
+                std::cerr << "-M (max_items) must be positive! Got " << max_items << ".\n";
+                return EXIT_FAILURE;
+            }
+            break;
+        case 'r':
+            start_repeat = atol(optarg);
+            break;
+        case 'i':
+            INSERT_PROP = atol(optarg);
+            break;
+        case 'l':
+            LOOKUP_PROP = atol(optarg);
+            break;
+        case 's':
+            skip_std_set = true;
+            break;
+        case 'h':
+            print_usage(argv[0]);
+            return EXIT_SUCCESS;
+        default:
+            print_usage(argv[0]);
+            return EXIT_FAILURE;
+        }
+    }
+
     std::cout << "pid: " << getpid() << std::endl;
-    get_env_int("BT_THREADS", &cur_numthreads);
-    get_env_int("BT_MIN", &min_items);
-    get_env_int("BT_MAX", &max_items);
-    get_env_int("BT_REPEAT", &start_repeat);
-    get_env_int("BT_INSERT_P", &INSERT_PROP);
-    get_env_int("BT_LOOKUP_P", &LOOKUP_PROP);
+
+    std::cout << "NumThreads: " << cur_numthreads << std::endl;
 
     std::cout << "InsertOp: " << INSERT_PROP << "% "
               << "LookupOp: " << LOOKUP_PROP << "% "
