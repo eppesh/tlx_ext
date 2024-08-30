@@ -584,7 +584,7 @@ void testrunner_loop(size_t items, const std::string& container_name) {
     std::cout << "RESULT"
               << " container=" << container_name
               << " op=" << TestClass::op()
-              << " time_total=" << std::setprecision(1) << (ts2 - ts1)
+              << " time_total=" << std::setprecision(3) << (ts2 - ts1)
               << " time(ns)="
               << std::fixed << std::setprecision(3)
               << ((ts2 - ts1) * 1e9 / actual_items)

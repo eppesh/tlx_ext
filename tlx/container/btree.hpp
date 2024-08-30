@@ -454,7 +454,7 @@ public:
             DBGPRT();
         }
 
-        void read_unlock(bool verify = true) {
+        void read_unlock(bool verify __attribute__((unused)) = true) {
             log_lock(nodep, lock_type_read_unlock);
             lock_type lock(mutex);
             delfromread(verify);
