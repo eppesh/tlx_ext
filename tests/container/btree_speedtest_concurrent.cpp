@@ -681,7 +681,7 @@ void print_usage(const char *program_name) {
 //! Speed test them!
 int main(int argc, char *argv[]) {
     int opt;
-    while ((opt = getopt(argc, argv, "t:m:M:r:i:l:s:h")) != -1) {
+    while ((opt = getopt(argc, argv, "t:m:M:r:i:l:sh")) != -1) {
         switch (opt) {
         case 't':
             cur_numthreads = atol(optarg);
@@ -719,6 +719,17 @@ int main(int argc, char *argv[]) {
             print_usage(argv[0]);
             return EXIT_FAILURE;
         }
+    }
+    argc -= optind;
+    argv += optind;
+    if (argc != 0) {
+        std::cerr << "Found extra " << argc << "arguments: ";
+        while (argv[0]) {
+            std::cerr << argv[0] << " ";
+            ++argv;
+        }
+        std::cerr << std::endl;
+        return EXIT_FAILURE;
     }
 
     std::cout << "pid: " << getpid() << std::endl;
