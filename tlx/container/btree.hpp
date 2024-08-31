@@ -57,7 +57,7 @@ thread_local thread_debug_info local_debug_info;
 enum lock_requirement {
     lock_all,
     lock_root_only,
-    lock_non_root_only,
+    lock_no_root_only,
     lock_none
 };
 
@@ -501,7 +501,7 @@ public:
             switch (treep->lock_req) {
             case lock_all: return true;
             case lock_root_only: return is_root;
-            case lock_non_root_only: return !is_root;
+            case lock_no_root_only: return !is_root;
             case lock_none: return false;
             }
         }

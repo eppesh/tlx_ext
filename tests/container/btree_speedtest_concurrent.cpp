@@ -26,14 +26,15 @@ size_t max_items = 1024000 * 64;
 
 size_t start_repeat = 1;
 
-size_t root_slot = 0;
+ssize_t g_root_slot = 0;
 
 //! number of threads operating at a time
 size_t cur_numthreads = 1;
 
 bool skip_std_set = false;
 
-lock_requirement lock_req = lock_all;
+lock_requirement g_lock_req = lock_all;
+std::string g_lock_req_str = "all";
 
 size_t LOOKUP_PROP = 70;
 size_t INSERT_PROP = 15;
@@ -204,6 +205,8 @@ public:
     }
 };
 
+unsigned short g_level, g_slotuse;
+
 //! Test a generic set type with insert, find and delete sequences
 template <typename SetType>
 class Test_Set_MixedOp
@@ -233,12 +236,22 @@ public:
             my_set.insert(i);
         }
 
-        if (root_slot != 0) { // insert more until reach the desired slots in root
+        if (g_root_slot != 0) { // insert more until reach the desired slots in root
+            if (g_root_slot < 0) {
+                std::cout << "adjust root_slot " << g_root_slot;
+                g_root_slot += my_set.leaf_slotmax;
+                std::cout << " to " << g_root_slot << "\n" << std::flush;
+            }
             for (size_t i = items; i < items * 1000; ++i) {
                 my_set.insert(i);
                 unsigned short level, cur_root_slot;
                 my_set.get_root_info(&level, &cur_root_slot);
-                if (root_slot == cur_root_slot) {
+                if (i % 10000000ull == 0) {
+                    std::cout << "level: " << level << "  root_slot: " << cur_root_slot
+                              << " expected root slot: " << g_root_slot
+                              << std::endl << std::flush;
+                }
+                if (g_root_slot == cur_root_slot) {
                     break;
                 }
             }
@@ -246,12 +259,11 @@ public:
 
         size_t new_items = my_set.size();
 
-        unsigned short level, slotuse;
-        my_set.get_root_info(&level, &slotuse);
+        my_set.get_root_info(&g_level, &g_slotuse);
 
-        std::cout << "Initialized " << items << " actural size=" << new_items
-                  << " root: level=" << level
-                  << " slots=" << slotuse << "\n";
+        std::cout << "Initialized " << items << " actual size=" << new_items
+                  << " root: level=" << g_level
+                  << " slots=" << g_slotuse << "\n";
         reset();
     }
 
@@ -334,7 +346,7 @@ public:
 
         thread_states.resize(cur_numthreads);
 
-        my_set.set_lock_requirement(lock_req);
+        my_set.set_lock_requirement(g_lock_req);
 
         reset();
 
@@ -619,15 +631,19 @@ void testrunner_loop(size_t items, const std::string& container_name) {
               << " time(ns)="
               << std::fixed << std::setprecision(3)
               << ((ts2 - ts1) * 1e9 / actual_items)
-              << " items_per_sec(m)=" << std::setprecision(3)
+              << " items_per_sec(m)=" << std::setprecision(2)
               << million_ops_per_sec
               << std::endl;
 
-    std::cout << "TestName\tItems\tMops/s\tThreads\n"
+    std::cout << "TreeName\tKeys(k)\tLevel\tRootSlt\tThreads\tLockReq\tMops/s\n"
               << container_name << "\t"
-              << actual_items << "\t"
+              << (actual_items + 500) / 1000 << "\t"
+              << g_level << "\t"
+              << g_slotuse << "\t"
+              << cur_numthreads << "\t"
+              << g_lock_req_str << "\t"
               << million_ops_per_sec << "\t"
-              << cur_numthreads << std::endl;
+              << std::endl;
 }
 
 // Template magic to emulate a for_each slots. These templates will roll-out
@@ -706,8 +722,8 @@ void print_usage(const char *program_name) {
               << "  -r <num>  Set BT_REPEAT (default: 0)\n"
               << "  -i <num>  Set BT_INSERT_P (default: 0)\n"
               << "  -l <num>  Set BT_LOOKUP_P (default: 0)\n"
-              << "  -L <root|non-root|all|none> Lock which nodes (default: all)\n"
-              << "  -R <num>  Set expected root slot (default: 0)\n"
+              << "  -L <root|no-root|all|none> Lock which nodes (default: all)\n"
+              << "  -R <num>  Set expected root slot, -2 means slotmax-2 (default: 0)\n"
               << "  -h        Print this help message and exit\n";
 }
 
@@ -737,7 +753,7 @@ int main(int argc, char *argv[]) {
             start_repeat = atol(optarg);
             break;
         case 'R':
-            root_slot = atol(optarg);
+            g_root_slot = atol(optarg);
             break;
         case 'i':
             INSERT_PROP = atol(optarg);
@@ -746,14 +762,15 @@ int main(int argc, char *argv[]) {
             LOOKUP_PROP = atol(optarg);
             break;
         case 'L':
+            g_lock_req_str = optarg;
             if (strcmp(optarg, "all") ==0) {
-                lock_req = lock_all;
+                g_lock_req = lock_all;
             } else if (strcmp(optarg, "root") ==0) {
-                lock_req = lock_root_only;
-            } else if (strcmp(optarg, "non-root") ==0) {
-                lock_req = lock_non_root_only;
+                g_lock_req = lock_root_only;
+            } else if (strcmp(optarg, "no-root") ==0) {
+                g_lock_req = lock_no_root_only;
             } else if (strcmp(optarg, "none") ==0) {
-                lock_req = lock_none;
+                g_lock_req = lock_none;
             } else {
                 std::cerr << "Unknow option " << optarg << " for -L\n";
                 return EXIT_FAILURE;
