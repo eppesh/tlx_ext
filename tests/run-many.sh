@@ -18,7 +18,8 @@ rm -f /tmp/out
 for ((thread=1;thread<=$MAX_THREAD;thread++)); do
     for lockReq in all root no-root none ; do
 	for rootSlot in 1 -2; do
-	    echo $prog -r 64 -m $N -M $N -i 0 -l 100 -s -t $thread -R $rootSlot -L $lockReq
+	    printf '\r%02d:%02d: ' "$(( SECONDS/60 ))" "$(( SECONDS%60 ))"
+	    echo -ne "$prog -r 64 -m $N -M $N -i 0 -l 100 -s -t $thread -R $rootSlot -L $lockReq > /tmp/one-out"
 	    if [ "$dryrun" != "1" ] ; then
 		$prog -r 64 -m $N -M $N -i 0 -l 100 -s -t $thread -R $rootSlot -L $lockReq > /tmp/one-out
 		if [ ! -f "/tmp/out" ]; then
