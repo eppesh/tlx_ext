@@ -54,6 +54,13 @@ extern std::string format_current_time(void);
 // Thread-local storage for each thread's debug information
 thread_local thread_debug_info local_debug_info;
 
+enum lock_requirement {
+    lock_all,
+    lock_root_only,
+    lock_non_root_only,
+    lock_none
+};
+
 enum lock_type {
     lock_type_read = 1,
     lock_type_read_got,
@@ -424,11 +431,12 @@ public:
         int readerswaiting = 0;
         int upgradewaiting = 0;
 
-#ifdef TLX_BTREE_DEBUG
         BTree *treep;
+        node *nodep;
+
+#ifdef TLX_BTREE_DEBUG
         std::unordered_set<std::thread::id> curwrite;
         std::unordered_set<std::thread::id> curread;
-        node *nodep;
         mutex_type set_mtx;
 
         void addtoread() {
@@ -487,7 +495,22 @@ public:
 #define DBGPRT()
 #endif
 
+        bool take_lock() {
+            bool is_root = treep->root_ == nodep;
+
+            switch (treep->lock_req) {
+            case lock_all: return true;
+            case lock_root_only: return is_root;
+            case lock_non_root_only: return !is_root;
+            case lock_none: return false;
+            }
+        }
+
         void readlock(bool verify __attribute__((unused)) = true) {
+            if (!take_lock()) {
+                numreader++;
+                return;
+            }
             log_lock(nodep, lock_type_read);
             lock_type lock(mutex);
             addtoread();
@@ -546,6 +569,10 @@ public:
         }
 
         void read_unlock(bool verify __attribute__((unused)) = true) {
+            if (!take_lock()) {
+                numreader--;
+                return;
+            }
             log_lock(nodep, lock_type_read_unlock);
             lock_type lock(mutex);
             delfromread(verify);
@@ -636,9 +663,9 @@ public: // XXX
 
         node(BTree *tree __attribute__((unused))) {
             lock = new LockHelper();
-#ifdef TLX_BTREE_DEBUG
             lock->nodep = this;
             lock->treep = tree;
+#ifdef TLX_BTREE_DEBUG
 #endif
         }
 
@@ -1970,6 +1997,12 @@ public:
         *level = root_->level;
         *slotuse = root_->slotuse;
     }
+
+    void set_lock_requirement(lock_requirement req) {
+        lock_req = req;
+    }
+
+    lock_requirement lock_req = lock_all;
 
 public:
     //! \name STL Access Functions Querying the Tree by Descending to a Leaf

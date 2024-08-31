@@ -33,6 +33,8 @@ size_t cur_numthreads = 1;
 
 bool skip_std_set = false;
 
+lock_requirement lock_req = lock_all;
+
 size_t LOOKUP_PROP = 70;
 size_t INSERT_PROP = 15;
 
@@ -331,6 +333,8 @@ public:
         size_t per_thread = repeat_until / cur_numthreads;
 
         thread_states.resize(cur_numthreads);
+
+        my_set.set_lock_requirement(lock_req);
 
         reset();
 
@@ -702,6 +706,7 @@ void print_usage(const char *program_name) {
               << "  -r <num>  Set BT_REPEAT (default: 0)\n"
               << "  -i <num>  Set BT_INSERT_P (default: 0)\n"
               << "  -l <num>  Set BT_LOOKUP_P (default: 0)\n"
+              << "  -L <root|non-root|all|none> Lock which nodes (default: all)\n"
               << "  -R <num>  Set expected root slot (default: 0)\n"
               << "  -h        Print this help message and exit\n";
 }
@@ -709,7 +714,7 @@ void print_usage(const char *program_name) {
 //! Speed test them!
 int main(int argc, char *argv[]) {
     int opt;
-    while ((opt = getopt(argc, argv, "t:m:M:r:R:i:l:sh")) != -1) {
+    while ((opt = getopt(argc, argv, "t:m:M:r:R:i:l:L:sh")) != -1) {
         switch (opt) {
         case 't':
             cur_numthreads = atol(optarg);
@@ -739,6 +744,20 @@ int main(int argc, char *argv[]) {
             break;
         case 'l':
             LOOKUP_PROP = atol(optarg);
+            break;
+        case 'L':
+            if (strcmp(optarg, "all") ==0) {
+                lock_req = lock_all;
+            } else if (strcmp(optarg, "root") ==0) {
+                lock_req = lock_root_only;
+            } else if (strcmp(optarg, "non-root") ==0) {
+                lock_req = lock_non_root_only;
+            } else if (strcmp(optarg, "none") ==0) {
+                lock_req = lock_none;
+            } else {
+                std::cerr << "Unknow option " << optarg << " for -L\n";
+                return EXIT_FAILURE;
+            }
             break;
         case 's':
             skip_std_set = true;

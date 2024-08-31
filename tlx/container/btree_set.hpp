@@ -329,6 +329,10 @@ public:
         tree_.get_root_info(level, slotuse);
     }
 
+    void set_lock_requirement(lock_requirement req) {
+        tree_.set_lock_requirement(req);
+    }
+
 public:
     //! \name STL Access Functions Querying the Tree by Descending to a Leaf
     //! \{
