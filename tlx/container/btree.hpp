@@ -32,9 +32,11 @@
 #include <atomic>
 #include <chrono>
 
-#define STD_LOCK
-//#define FAST_LOCK
+//#define STD_LOCK
+#define FAST_LOCK
 //#define DUMMY_LOCK
+//#define BUSY_WAIT_LOCK
+//#define HYBRID_LOCK
 
 // Define the struct for all thread info, aligned on 64-byte boundary
 struct alignas(64) thread_info {
@@ -114,6 +116,126 @@ public:
     void wait(std::unique_lock<DummyLock>&, Pred) {}
     void notify_one() {}
     void notify_all() {}
+};
+
+// BusyWait lock and cond var
+class BusyWaitLock {
+public:
+    BusyWaitLock() {
+        pthread_mutex_init(&mutex_, nullptr);  // Initialize the mutex
+    }
+
+    ~BusyWaitLock() {
+        pthread_mutex_destroy(&mutex_);  // Destroy the mutex
+    }
+
+    void lock() {
+        while (pthread_mutex_trylock(&mutex_) != 0) {  // Attempt to lock the mutex
+        }
+    }
+
+    void unlock() {
+        pthread_mutex_unlock(&mutex_);  // Release the mutex
+    }
+private:
+    pthread_mutex_t mutex_;  // Mutex object
+};
+
+// FastCondVar class to mimic std::condition_variable with pthread_cond_t
+class BusyWaitCondVar {
+public:
+    // Wait function with predicate
+    template <class Pred>
+    void wait(std::unique_lock<BusyWaitLock>& lock, Pred pred) {
+        while (true) { // Evaluate predicate
+            lock.unlock();
+            lock.lock();
+            if (pred()) {
+                break;
+            }
+        }
+    }
+    void notify_one() {}
+    void notify_all() {}
+};
+
+enum { MAX_SPIN = 200 };
+
+// HybridCondVar class is a hybrid of BusyWaitLock and FastLock
+class HybridLock {
+public:
+    HybridLock() {
+        pthread_mutex_init(&mutex_, nullptr);
+    }
+
+    ~HybridLock() {
+        pthread_mutex_destroy(&mutex_);
+    }
+
+    void lock() {
+        int i = 0;
+        while (pthread_mutex_trylock(&mutex_) != 0) {  // Attempt to lock the mutex
+            ++i;
+            if (i >= MAX_SPIN) {
+                pthread_mutex_lock(&mutex_);
+                break;
+            }
+        }
+    }
+
+    void unlock() {
+        pthread_mutex_unlock(&mutex_);
+    }
+
+    pthread_mutex_t* native_handle() {
+        return &mutex_;
+    }
+
+private:
+    pthread_mutex_t mutex_;
+};
+
+// HybridCondVar class is a hybrid of BusyWaitCondVar and FastCondVar
+class HybridCondVar {
+public:
+    HybridCondVar() {
+        pthread_cond_init(&cond_, nullptr);
+    }
+
+    ~HybridCondVar() {
+        pthread_cond_destroy(&cond_);
+    }
+
+    // Wait function with predicate
+    template <class Pred>
+    void wait(std::unique_lock<HybridLock>& lock, Pred pred) {
+        int i = 0;
+        while (true) {
+            lock.unlock();
+            lock.lock();
+            if (pred()) {
+                break;
+            }
+            ++i;
+            if (i >= MAX_SPIN) {
+                while (!pred()) { // Evaluate predicate
+                    pthread_cond_wait(&cond_, lock.mutex()->native_handle());
+                }
+                break;
+            }
+        }
+    }
+
+    void notify_one() {
+        pthread_cond_signal(&cond_);
+    }
+
+    void notify_all() {
+        pthread_cond_broadcast(&cond_);
+    }
+
+private:
+    pthread_cond_t cond_;
 };
 
 // FastLock class to wrap pthread_mutex_t
@@ -316,6 +438,12 @@ template <typename Key, typename Value,
 #elif defined(DUMMY_LOCK)
           typename Mutex = DummyLock,
           typename ConditionVariable = DummyCondVar,
+#elif defined(BUSY_WAIT_LOCK)
+          typename Mutex = BusyWaitLock,
+          typename ConditionVariable = BusyWaitCondVar,
+#elif defined(HYBRID_LOCK)
+          typename Mutex = HybridLock,
+          typename ConditionVariable = HybridCondVar,
 #else
 #error "Must define one of STD_LOCK, FAST_LOCK, or DUMMY_LOCK"
 #endif
