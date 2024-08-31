@@ -714,7 +714,7 @@ public:
             case lock_root_only: return is_root;
             case lock_no_root_only: return !is_root;
             case lock_none: return false;
-            default: TLX_BTREE_ASSERT(false); return true;
+            default: tlx_die_unless(false); return true;
             }
         }
 
