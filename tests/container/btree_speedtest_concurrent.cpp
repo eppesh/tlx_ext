@@ -26,6 +26,8 @@ size_t max_items = 1024000 * 64;
 
 size_t start_repeat = 1;
 
+size_t root_slot = 0;
+
 //! number of threads operating at a time
 size_t cur_numthreads = 1;
 
@@ -216,13 +218,38 @@ public:
 
         std::uniform_int_distribution<> key(0, max_key);
 
-        // prepare the set to start with items
+        /*
+        // prepare the set to start with random items
         while (my_set.size() < items) {
             auto k = key(gen);
             my_set.insert(k);
         }
+        */
 
-        std::cout << "Initialized " << items << "\n";
+        // prepare the set with sequential items for lookup only testing
+        for (size_t i = 0; i < items; ++i) {
+            my_set.insert(i);
+        }
+
+        if (root_slot != 0) { // insert more until reach the desired slots in root
+            for (size_t i = items; i < items * 1000; ++i) {
+                my_set.insert(i);
+                unsigned short level, cur_root_slot;
+                my_set.get_root_info(&level, &cur_root_slot);
+                if (root_slot == cur_root_slot) {
+                    break;
+                }
+            }
+        }
+
+        size_t new_items = my_set.size();
+
+        unsigned short level, slotuse;
+        my_set.get_root_info(&level, &slotuse);
+
+        std::cout << "Initialized " << items << " actural size=" << new_items
+                  << " root: level=" << level
+                  << " slots=" << slotuse << "\n";
         reset();
     }
 
@@ -622,11 +649,11 @@ struct btree_range<Functional, Low, Low> {
 
 template <template <typename Type> class TestClass>
 void TestFactory_Set<TestClass>::call_testrunner(size_t items) {
+#if 0
     if (cur_numthreads == 1 && !skip_std_set) {
         testrunner_loop<StdSet>(items, "std::set");
     }
 
-#if 0
     btree_range<BtreeSet, min_nodeslots, max_nodeslots>()(
         items, "btree_set");
 #else
@@ -675,13 +702,14 @@ void print_usage(const char *program_name) {
               << "  -r <num>  Set BT_REPEAT (default: 0)\n"
               << "  -i <num>  Set BT_INSERT_P (default: 0)\n"
               << "  -l <num>  Set BT_LOOKUP_P (default: 0)\n"
+              << "  -R <num>  Set expected root slot (default: 0)\n"
               << "  -h        Print this help message and exit\n";
 }
 
 //! Speed test them!
 int main(int argc, char *argv[]) {
     int opt;
-    while ((opt = getopt(argc, argv, "t:m:M:r:i:l:sh")) != -1) {
+    while ((opt = getopt(argc, argv, "t:m:M:r:R:i:l:sh")) != -1) {
         switch (opt) {
         case 't':
             cur_numthreads = atol(optarg);
@@ -702,6 +730,9 @@ int main(int argc, char *argv[]) {
             break;
         case 'r':
             start_repeat = atol(optarg);
+            break;
+        case 'R':
+            root_slot = atol(optarg);
             break;
         case 'i':
             INSERT_PROP = atol(optarg);

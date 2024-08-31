@@ -325,6 +325,10 @@ public:
 
     //! \}
 
+    void get_root_info(unsigned short *level, unsigned short *slotuse) const {
+        tree_.get_root_info(level, slotuse);
+    }
+
 public:
     //! \name STL Access Functions Querying the Tree by Descending to a Leaf
     //! \{

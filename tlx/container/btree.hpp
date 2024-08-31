@@ -1966,6 +1966,11 @@ public:
 
     //! \}
 
+    void get_root_info(unsigned short *level, unsigned short *slotuse) const {
+        *level = root_->level;
+        *slotuse = root_->slotuse;
+    }
+
 public:
     //! \name STL Access Functions Querying the Tree by Descending to a Leaf
     //! \{
