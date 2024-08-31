@@ -255,7 +255,7 @@ private:
 
     void mixed_ops(int id, int items, int total_threads) {
         // TODO std::mt19937 gen(seed + id);
-        std::mt19937 gen(std::random_device{}());
+        std::mt19937 gen(std::random_device{}() + id);
         std::uniform_int_distribution<> key_dist(0, max_key);
         std::uniform_int_distribution<> dist(0, 99);
 
