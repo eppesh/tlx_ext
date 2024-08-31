@@ -33,8 +33,10 @@
 #include <chrono>
 
 //#define STD_LOCK
-#define FAST_LOCK
+//#define FAST_LOCK
 //#define DUMMY_LOCK
+#define BUSY_SPIN_LOCK
+//#define HYBRID_SPIN_LOCK
 //#define BUSY_WAIT_LOCK
 //#define HYBRID_LOCK
 
@@ -74,6 +76,8 @@ enum lock_type {
     lock_type_read_unlock,
     lock_type_write_unlock,
 };
+
+enum { MAX_SPIN = 200 };
 
 // Function to convert enum to string
 inline std::string lock_type_to_string(int lt) {
@@ -118,6 +122,82 @@ public:
     void notify_all() {}
 };
 
+class HybridSpinLock {
+public:
+    HybridSpinLock() : flag_(false) {}  // Initialize the atomic flag
+
+    void lock() {
+        int i = 0;
+        while (flag_.test_and_set(std::memory_order_acquire)) {  // Attempt to set the flag
+            if (++i >= MAX_SPIN) {
+                std::this_thread::yield();
+            }
+        }
+    }
+
+    void unlock() {
+        flag_.clear(std::memory_order_release);  // Clear the flag to release the lock
+    }
+
+private:
+    std::atomic_flag flag_;  // Atomic flag used for CAS operation
+};
+
+class HybridSpinCondVar {
+public:
+    // Wait function with predicate
+    template <class Pred>
+    void wait(std::unique_lock<HybridSpinLock>& lock, Pred pred) {
+        int i = 0;
+        while (true) { // Evaluate predicate
+            lock.unlock();
+            if (++i >= MAX_SPIN) {
+                std::this_thread::yield();
+            }
+            lock.lock();
+            if (pred()) {
+                break;
+            }
+        }
+    }
+    void notify_one() {}
+    void notify_all() {}
+};
+
+class BusySpinLock {
+public:
+    BusySpinLock() : flag_(false) {}  // Initialize the atomic flag
+
+    void lock() {
+        while (flag_.test_and_set(std::memory_order_acquire)) {  // Attempt to set the flag
+        }
+    }
+
+    void unlock() {
+        flag_.clear(std::memory_order_release);  // Clear the flag to release the lock
+    }
+
+private:
+    std::atomic_flag flag_;  // Atomic flag used for CAS operation
+};
+
+class BusySpinCondVar {
+public:
+    // Wait function with predicate
+    template <class Pred>
+    void wait(std::unique_lock<BusySpinLock>& lock, Pred pred) {
+        while (true) { // Evaluate predicate
+            lock.unlock();
+            lock.lock();
+            if (pred()) {
+                break;
+            }
+        }
+    }
+    void notify_one() {}
+    void notify_all() {}
+};
+
 // BusyWait lock and cond var
 class BusyWaitLock {
 public:
@@ -141,7 +221,6 @@ private:
     pthread_mutex_t mutex_;  // Mutex object
 };
 
-// FastCondVar class to mimic std::condition_variable with pthread_cond_t
 class BusyWaitCondVar {
 public:
     // Wait function with predicate
@@ -158,8 +237,6 @@ public:
     void notify_one() {}
     void notify_all() {}
 };
-
-enum { MAX_SPIN = 200 };
 
 // HybridCondVar class is a hybrid of BusyWaitLock and FastLock
 class HybridLock {
@@ -438,6 +515,12 @@ template <typename Key, typename Value,
 #elif defined(DUMMY_LOCK)
           typename Mutex = DummyLock,
           typename ConditionVariable = DummyCondVar,
+#elif defined(BUSY_SPIN_LOCK)
+          typename Mutex = BusySpinLock,
+          typename ConditionVariable = BusySpinCondVar,
+#elif defined(HYBRID_SPIN_LOCK)
+          typename Mutex = HybridSpinLock,
+          typename ConditionVariable = HybridSpinCondVar,
 #elif defined(BUSY_WAIT_LOCK)
           typename Mutex = BusyWaitLock,
           typename ConditionVariable = BusyWaitCondVar,
@@ -553,7 +636,7 @@ public:
         cv_type readcv;
         cv_type writecv;
         cv_type upgradecv;
-        unsigned int numreader = 0;
+        std::atomic<unsigned int> numreader = 0;
         bool haswriter = false;
         int writerswaiting = 0;
         int readerswaiting = 0;
