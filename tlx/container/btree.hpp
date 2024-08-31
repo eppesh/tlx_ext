@@ -19,6 +19,7 @@
 #include <cassert>
 #include <cstddef>
 #include <functional>
+#include <pthread.h>
 #include <istream>
 #include <memory>
 #include <ostream>
@@ -29,6 +30,11 @@
 #include <mutex>
 #include <condition_variable>
 #include <atomic>
+#include <chrono>
+
+#define STD_LOCK
+//#define FAST_LOCK
+//#define DUMMY_LOCK
 
 // Define the struct for all thread info, aligned on 64-byte boundary
 struct alignas(64) thread_info {
@@ -85,6 +91,81 @@ inline std::string lock_type_to_string(int lt) {
             return "unknown_lock_type";
     }
 }
+
+// DummyLock class to do nothing, for single-threaded case
+class DummyLock {
+public:
+    void lock() {}
+    void unlock() {}
+};
+
+// DummyCondVar class to do nothing, for single-threaded case
+class DummyCondVar {
+public:
+    // Wait function with predicate
+    template <class Pred>
+    void wait(std::unique_lock<DummyLock>&, Pred) {}
+    void notify_one() {}
+    void notify_all() {}
+};
+
+// FastLock class to wrap pthread_mutex_t
+class FastLock {
+public:
+    FastLock() {
+        pthread_mutex_init(&mutex_, nullptr);
+    }
+
+    ~FastLock() {
+        pthread_mutex_destroy(&mutex_);
+    }
+
+    void lock() {
+        pthread_mutex_lock(&mutex_);
+    }
+
+    void unlock() {
+        pthread_mutex_unlock(&mutex_);
+    }
+
+    pthread_mutex_t* native_handle() {
+        return &mutex_;
+    }
+
+private:
+    pthread_mutex_t mutex_;
+};
+
+// FastCondVar class to mimic std::condition_variable with pthread_cond_t
+class FastCondVar {
+public:
+    FastCondVar() {
+        pthread_cond_init(&cond_, nullptr);
+    }
+
+    ~FastCondVar() {
+        pthread_cond_destroy(&cond_);
+    }
+
+    // Wait function with predicate
+    template <class Pred>
+    void wait(std::unique_lock<FastLock>& lock, Pred pred) {
+        while (!pred()) { // Evaluate predicate
+            pthread_cond_wait(&cond_, lock.mutex()->native_handle());
+        }
+    }
+
+    void notify_one() {
+        pthread_cond_signal(&cond_);
+    }
+
+    void notify_all() {
+        pthread_cond_broadcast(&cond_);
+    }
+
+private:
+    pthread_cond_t cond_;
+};
 
 extern std::mutex printmtx;
 
@@ -219,8 +300,18 @@ template <typename Key, typename Value,
           typename Traits = btree_default_traits<Key, Value>,
           bool Duplicates = false,
           typename Allocator = std::allocator<Value>,
+#if defined(STD_LOCK)
           typename Mutex = std::mutex,
           typename ConditionVariable = std::condition_variable,
+#elif defined(FAST_LOCK)
+          typename Mutex = FastLock,
+          typename ConditionVariable = FastCondVar,
+#elif defined(DUMMY_LOCK)
+          typename Mutex = DummyLock,
+          typename ConditionVariable = DummyCondVar,
+#else
+#error "Must define one of STD_LOCK, FAST_LOCK, or DUMMY_LOCK"
+#endif
           typename UniqueLock = std::unique_lock<Mutex>>
 class BTree
 {
